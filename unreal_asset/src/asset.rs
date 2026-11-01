@@ -315,6 +315,21 @@ impl UAssetExportMapEntry {
     }
 }
 
+/// Location of a piece of bulk data
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DataResource {
+    /// Resource flags
+    pub flags: u32,
+    /// Offset into the file holding the data
+    pub serial_offset: i64,
+    /// Size in the file holding the data
+    pub serial_size: i64,
+    /// Size after decompression
+    pub raw_size: i64,
+    /// `EBulkDataFlags` of the data
+    pub legacy_bulk_data_flags: u32,
+}
+
 /// Asset header
 struct AssetHeader {
     /// Name count
@@ -1124,6 +1139,51 @@ impl<'a, C: Read + Seek> Asset<C> {
         }
 
         Ok(())
+    }
+
+    /// Where the bulk data of this asset is stored, bulk data refers to these by index
+    pub fn data_resources(&self) -> Vec<DataResource> {
+        let table = (self.data_resource_offset - self.preload_end) as usize;
+        let Some(mut data) = self.post_preload_data.get(table..) else {
+            return Vec::new();
+        };
+        if self.data_resource_offset <= 0 {
+            return Vec::new();
+        }
+        let read = |data: &mut &[u8]| -> Option<(u32, i32)> {
+            Some((data.read_u32::<LE>().ok()?, data.read_i32::<LE>().ok()?))
+        };
+        let Some((version, count)) = read(&mut data) else {
+            return Vec::new();
+        };
+        let mut resources = Vec::new();
+        for _ in 0..count {
+            let mut resource = || -> Option<DataResource> {
+                let flags = data.read_u32::<LE>().ok()?;
+                // the cooked index was added in the second version
+                if version >= 2 {
+                    data.read_u8().ok()?;
+                }
+                let serial_offset = data.read_i64::<LE>().ok()?;
+                data.read_i64::<LE>().ok()?;
+                let serial_size = data.read_i64::<LE>().ok()?;
+                let raw_size = data.read_i64::<LE>().ok()?;
+                data.read_i32::<LE>().ok()?;
+                let legacy_bulk_data_flags = data.read_u32::<LE>().ok()?;
+                Some(DataResource {
+                    flags,
+                    serial_offset,
+                    serial_size,
+                    raw_size,
+                    legacy_bulk_data_flags,
+                })
+            };
+            match resource() {
+                Some(resource) => resources.push(resource),
+                None => break,
+            }
+        }
+        resources
     }
 
     /// Cooked import tables come in a short layout and an expanded one with a package name,
