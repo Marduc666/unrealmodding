@@ -158,6 +158,21 @@ fn shallow_type(property: &FProperty) -> EPropertyType {
         .unwrap_or(EPropertyType::Unknown)
 }
 
+/// The name of an enum, which is added to the mappings if it's missing
+fn enum_name<C: Read + Seek>(
+    asset: &Asset<C>,
+    index: PackageIndex,
+    mappings: &mut Usmap,
+) -> String {
+    let name = object_name(asset, index).unwrap_or_default();
+    // the values of blueprint enums aren't needed as unknown ones are kept as numbers
+    if mappings.enum_map.get_by_key(&name).is_none() {
+        mappings.enum_map.insert(name.clone(), Vec::new());
+        mappings.enum_values.insert(name.clone(), Vec::new());
+    }
+    name
+}
+
 /// Converts a property to its usmap equivalent, adding what it depends on to `packages`
 fn convert<C: Read + Seek>(
     asset: &Asset<C>,
@@ -166,7 +181,21 @@ fn convert<C: Read + Seek>(
     packages: &mut Vec<String>,
 ) -> UsmapPropertyData {
     let inner = |property: &FProperty, mappings: &mut Usmap, packages: &mut Vec<String>| {
-        Box::new(convert(asset, property, mappings, packages))
+        Box::new(match property {
+            // the unversioned serializer only writes these as integers directly in a schema,
+            // inside of a container they're the name of the value
+            FProperty::FByteProperty(e) if e.enum_value.index != 0 => UsmapEnumPropertyData {
+                inner_property: Box::new(
+                    UsmapShallowPropertyData {
+                        property_type: EPropertyType::NameProperty,
+                    }
+                    .into(),
+                ),
+                name: enum_name(asset, e.enum_value, mappings),
+            }
+            .into(),
+            _ => convert(asset, property, mappings, packages),
+        })
     };
     match property {
         FProperty::FArrayProperty(e) => UsmapArrayPropertyData {
@@ -189,19 +218,11 @@ fn convert<C: Read + Seek>(
             }
             UsmapStructPropertyData { struct_type }.into()
         }
-        FProperty::FEnumProperty(e) => {
-            let name = object_name(asset, e.enum_value).unwrap_or_default();
-            // the values of blueprint enums aren't needed as unknown ones are kept as numbers
-            if mappings.enum_map.get_by_key(&name).is_none() {
-                mappings.enum_map.insert(name.clone(), Vec::new());
-                mappings.enum_values.insert(name.clone(), Vec::new());
-            }
-            UsmapEnumPropertyData {
-                inner_property: inner(&e.underlying_prop, mappings, packages),
-                name,
-            }
-            .into()
+        FProperty::FEnumProperty(e) => UsmapEnumPropertyData {
+            inner_property: inner(&e.underlying_prop, mappings, packages),
+            name: enum_name(asset, e.enum_value, mappings),
         }
+        .into(),
         _ => UsmapShallowPropertyData {
             property_type: shallow_type(property),
         }
