@@ -95,17 +95,19 @@ impl ArrayProperty {
             if let Some(struct_data) = asset
                 .get_mappings()
                 .and_then(|e| e.get_property(&name, &ancestry))
-                .and_then(|e| cast!(UsmapPropertyData, UsmapArrayPropertyData, &e.property_data))
+                .and_then(|e| match &e.property_data {
+                    UsmapPropertyData::UsmapArrayPropertyData(array) => Some(&array.inner_type),
+                    UsmapPropertyData::UsmapSetPropertyData(set) => Some(&set.inner_type),
+                    _ => None,
+                })
             {
                 array_type = Some(FName::new_dummy(
-                    struct_data.inner_type.get_property_type().to_string(),
+                    struct_data.get_property_type().to_string(),
                     0,
                 ));
-                if let Some(inner_struct_data) = cast!(
-                    UsmapPropertyData,
-                    UsmapStructPropertyData,
-                    struct_data.inner_type.as_ref()
-                ) {
+                if let Some(inner_struct_data) =
+                    cast!(UsmapPropertyData, UsmapStructPropertyData, struct_data.as_ref())
+                {
                     array_struct_type =
                         Some(FName::new_dummy(inner_struct_data.struct_type.clone(), 0));
                 }
@@ -266,6 +268,7 @@ impl ArrayProperty {
 
         if array_type.as_ref().is_some_and(|ty| ty == "StructProperty")
             && serialize_structs_differently
+            && !(self.value.is_empty() && asset.has_unversioned_properties())
         {
             let property: &StructProperty = match !self.value.is_empty() {
                 true => match &self.value[0] {
@@ -283,8 +286,11 @@ impl ArrayProperty {
                 },
             }?;
 
+            let has_inner_tag = !asset.has_unversioned_properties()
+                && asset.get_object_version() >= ObjectVersion::VER_UE4_INNER_ARRAY_TAG_INFO;
+
             let mut length_loc = None;
-            if asset.get_object_version() >= ObjectVersion::VER_UE4_INNER_ARRAY_TAG_INFO {
+            if has_inner_tag {
                 asset.write_fname(&property.name)?;
                 asset.write_fname(&asset.get_name_map().get_mut().add_fname("StructProperty"))?;
                 length_loc = Some(asset.position());
@@ -316,7 +322,7 @@ impl ArrayProperty {
                 struct_property.write(asset, false)?;
             }
 
-            if asset.get_object_version() >= ObjectVersion::VER_UE4_INNER_ARRAY_TAG_INFO {
+            if has_inner_tag {
                 let length_loc = length_loc.expect("Corrupted memory");
                 let full_len = asset.position() - length_loc;
                 let new_loc = asset.position();

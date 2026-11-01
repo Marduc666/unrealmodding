@@ -25,6 +25,9 @@ pub struct EnumProperty {
     pub inner_type: Option<FName>,
     /// Enum value
     pub value: Option<FName>,
+    /// Numeric value that no name was found for, used only with unversioned properties
+    #[container_ignore]
+    pub raw_value: Option<i64>,
 }
 impl_property_data_trait!(EnumProperty);
 
@@ -90,18 +93,24 @@ impl EnumProperty {
                 };
 
                 if let Some(enum_index) = numeric_value {
-                    let info = enum_ty
-                        .get_content(|ty| asset.get_mappings().unwrap().enum_map.get_by_key(ty))
+                    let mappings = asset.get_mappings().unwrap();
+                    let (info, values) = enum_ty
+                        .get_content(|ty| {
+                            Some((
+                                mappings.enum_map.get_by_key(ty)?,
+                                mappings.enum_values.get_by_key(ty)?,
+                            ))
+                        })
                         .ok_or_else(|| {
                             Error::invalid_file(enum_ty.get_content(|ty| {
                                 "Missing unversioned info for: ".to_string() + ty
                             }))
                         })?;
-                    let value = if enum_index < 0 || enum_index as usize >= info.len() {
-                        None
-                    } else {
-                        Some(FName::new_dummy(info[enum_index as usize].clone(), 0))
-                    };
+                    let value = values
+                        .iter()
+                        .position(|value| *value == enum_index)
+                        .map(|index| FName::new_dummy(info[index].clone(), 0));
+                    let raw_value = value.is_none().then_some(enum_index);
 
                     return Ok(EnumProperty {
                         name,
@@ -111,6 +120,7 @@ impl EnumProperty {
                         enum_type: Some(enum_ty),
                         inner_type: Some(inner_ty),
                         value,
+                        raw_value,
                     });
                 }
 
@@ -136,6 +146,7 @@ impl EnumProperty {
             enum_type,
             inner_type,
             value: Some(value),
+            raw_value: None,
         })
     }
 }
@@ -146,48 +157,47 @@ impl PropertyTrait for EnumProperty {
         asset: &mut Writer,
         include_header: bool,
     ) -> Result<usize, Error> {
-        if asset.has_unversioned_properties()
-            && self
-                .inner_type
-                .as_ref()
-                .map(|e| e == "ByteProperty")
-                .unwrap_or(false)
-        {
+        let inner_size = self.inner_type.as_ref().and_then(|ty| {
+            ty.get_content(|ty| match ty {
+                "ByteProperty" | "Int8Property" => Some(size_of::<u8>()),
+                "UInt16Property" | "Int16Property" => Some(size_of::<u16>()),
+                "UInt32Property" | "IntProperty" => Some(size_of::<u32>()),
+                "UInt64Property" | "Int64Property" => Some(size_of::<u64>()),
+                _ => None,
+            })
+        });
+        if let (true, Some(inner_size)) = (asset.has_unversioned_properties(), inner_size) {
             self.enum_type
                 .as_ref()
                 .ok_or_else(|| {
                     Error::no_data("enum_type is None on an unversioned property".to_string())
                 })?
                 .get_content(|enum_type| {
-                    let info = asset
+                    let mappings = asset
                         .get_mappings()
-                        .ok_or_else(PropertyError::no_mappings)?
-                        .enum_map
+                        .ok_or_else(PropertyError::no_mappings)?;
+                    let missing = || {
+                        Error::invalid_file("Missing unversioned info for: ".to_string() + enum_type)
+                    };
+                    let info = mappings.enum_map.get_by_key(enum_type).ok_or_else(missing)?;
+                    let values = mappings
+                        .enum_values
                         .get_by_key(enum_type)
-                        .ok_or_else(|| {
-                            Error::invalid_file(
-                                "Missing unversioned info for: ".to_string() + enum_type,
-                            )
-                        })?;
+                        .ok_or_else(missing)?;
 
-                    let enum_index = match self.value.as_ref() {
+                    let enum_value = match self.value.as_ref() {
                         Some(value) => info
                             .iter()
-                            .enumerate()
-                            .find(|(_, e)| value == e.as_str())
-                            .map(|(index, _)| index as u8)
-                            .ok_or_else(|| {
-                                Error::invalid_file(
-                                    "Missing unversioned info for: ".to_string() + enum_type,
-                                )
-                            })?,
-                        None => u8::MAX,
+                            .position(|e| value == e.as_str())
+                            .map(|index| values[index])
+                            .ok_or_else(missing)?,
+                        None => self.raw_value.unwrap_or(-1),
                     };
 
-                    asset.write_u8(enum_index)?;
+                    asset.write_all(&enum_value.to_le_bytes()[..inner_size])?;
                     Ok::<(), Error>(())
                 })?;
-            return Ok(size_of::<u8>());
+            return Ok(inner_size);
         }
 
         if include_header {

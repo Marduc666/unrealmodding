@@ -41,7 +41,7 @@ impl SetProperty {
         let removed_items = ArrayProperty::new_no_header(
             asset,
             name.clone(),
-            ancestry.with_parent(name.clone()),
+            ancestry.clone(),
             false,
             length,
             0,

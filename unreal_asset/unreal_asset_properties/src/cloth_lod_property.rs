@@ -56,7 +56,7 @@ impl MeshToMeshVertData {
             0,
         )?;
 
-        let mut source_mesh_vert_indices = Vec::with_capacity(4);
+        let mut source_mesh_vert_indices = Vec::new();
         for _ in 0..4 {
             source_mesh_vert_indices.push(asset.read_u16::<LE>()?);
         }
@@ -133,14 +133,14 @@ impl ClothLodDataProperty {
         )?;
 
         let transition_up_skin_data_len = asset.read_i32::<LE>()?;
-        let mut transition_up_skin_data = Vec::with_capacity(transition_up_skin_data_len as usize);
+        let mut transition_up_skin_data = Vec::new();
         for _ in 0..transition_up_skin_data_len {
             transition_up_skin_data.push(MeshToMeshVertData::new(asset)?);
         }
 
         let transition_down_skin_data_len = asset.read_i32::<LE>()?;
         let mut transition_down_skin_data =
-            Vec::with_capacity(transition_down_skin_data_len as usize);
+            Vec::new();
         for _ in 0..transition_down_skin_data_len {
             transition_down_skin_data.push(MeshToMeshVertData::new(asset)?);
         }

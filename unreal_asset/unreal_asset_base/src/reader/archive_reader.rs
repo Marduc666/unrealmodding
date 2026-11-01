@@ -196,7 +196,7 @@ pub trait ArchiveReader<Index: PackageIndexTrait>: ArchiveTrait<Index> + Read {
         length: i32,
         getter: impl Fn(&mut Self) -> Result<T, Error>,
     ) -> Result<Vec<T>, Error> {
-        let mut array = Vec::with_capacity(length as usize);
+        let mut array = Vec::new();
         for _ in 0..length {
             array.push(getter(self)?);
         }

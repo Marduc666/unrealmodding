@@ -154,7 +154,7 @@ impl MapProperty {
         let type_2 = type_2.ok_or_else(|| Error::invalid_file("No type2".to_string()))?;
 
         let mut keys_to_remove = if num_keys_to_remove > 0 {
-            let mut vec = Vec::with_capacity(num_keys_to_remove as usize);
+            let mut vec = Vec::new();
             for _ in 0..num_keys_to_remove as usize {
                 vec.push(MapProperty::map_type_to_class(
                     asset,

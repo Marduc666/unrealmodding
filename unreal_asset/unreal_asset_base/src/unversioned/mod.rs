@@ -151,6 +151,8 @@ pub struct Usmap {
     pub name_map: Vec<String>,
     /// Enum map
     pub enum_map: IndexedMap<String, Vec<String>>,
+    /// Numeric value of every name in the enum map
+    pub enum_values: IndexedMap<String, Vec<i64>>,
     /// Schemas
     pub schemas: IndexedMap<String, UsmapSchema>,
     /// Extension version
@@ -193,6 +195,29 @@ impl Usmap {
         }
 
         properties
+    }
+
+    /// Gets the "global" index of every property with this name in a schema and its supers,
+    /// a class can shadow a property of its parent so there can be several
+    pub fn get_global_indices(
+        &self,
+        property_name: &FName,
+        schema_name: &str,
+        duplication_index: u32,
+    ) -> Vec<u32> {
+        let mut indices = Vec::new();
+        let mut global_index = 0;
+        let mut schema_name = schema_name;
+        while let Some(schema) = self.schemas.get_by_key(schema_name) {
+            if let Some(property) =
+                property_name.get_content(|name| schema.get_property(name, duplication_index))
+            {
+                indices.push(global_index + property.schema_index as u32);
+            }
+            global_index += schema.prop_count as u32;
+            schema_name = schema.super_type.as_str();
+        }
+        indices
     }
 
     /// Gets usmap property and it's "global" index for a given proeprty name + ancestry with a duplication index
@@ -355,6 +380,7 @@ impl Usmap {
 
         let enum_len = reader.read_u32::<LE>()?;
         self.enum_map = IndexedMap::with_capacity(enum_len as usize);
+        self.enum_values = IndexedMap::with_capacity(enum_len as usize);
 
         let mut reader = UsmapReader::new(&mut reader, &self.name_map, &self.custom_versions);
 
@@ -367,18 +393,21 @@ impl Usmap {
                 reader.read_u8()? as usize
             };
             let mut enum_names = Vec::with_capacity(enum_names_len);
+            let mut enum_values = Vec::with_capacity(enum_names_len);
 
             if usmap_version >= EUsmapVersion::ExplicitEnumValues {
                 for _ in 0..enum_names_len {
-                    let _value = reader.read_u64::<LE>()?;
+                    enum_values.push(reader.read_u64::<LE>()? as i64);
                     enum_names.push(reader.read_name()?);
                 }
             } else {
-                for _ in 0..enum_names_len {
+                for value in 0..enum_names_len {
+                    enum_values.push(value as i64);
                     enum_names.push(reader.read_name()?);
                 }
             }
 
+            self.enum_values.insert(enum_name.clone(), enum_values);
             self.enum_map.insert(enum_name, enum_names);
         }
 
@@ -427,6 +456,7 @@ impl Usmap {
             version: EUsmapVersion::Initial,
             name_map: Vec::new(),
             enum_map: IndexedMap::new(),
+            enum_values: IndexedMap::new(),
             schemas: IndexedMap::new(),
             extension_version: UsmapExtensionVersion::NONE,
             object_version: ObjectVersion::UNKNOWN,

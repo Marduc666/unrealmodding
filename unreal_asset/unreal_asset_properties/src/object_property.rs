@@ -1,5 +1,7 @@
 //! Object properties
 
+use unreal_asset_base::engine_version::EngineVersion;
+
 use crate::property_prelude::*;
 
 /// Object property
@@ -109,7 +111,18 @@ impl SoftObjectPath {
         asset: &mut Reader,
     ) -> Result<Self, Error> {
         let asset_path = TopLevelAssetPath::read(asset)?;
-        let sub_path_string = asset.read_fstring()?;
+        let sub_path_string = match asset.get_engine_version() >= EngineVersion::VER_UE5_8 {
+            // an FUtf8String which unlike an FString has no null terminator
+            true => {
+                let length = asset.read_i32::<LE>()?;
+                let mut sub_path = vec![0; length.max(0) as usize];
+                asset.read_exact(&mut sub_path)?;
+                (length > 0)
+                    .then(|| String::from_utf8(sub_path))
+                    .transpose()?
+            }
+            false => asset.read_fstring()?,
+        };
 
         Ok(SoftObjectPath {
             asset_path,
@@ -123,7 +136,16 @@ impl SoftObjectPath {
         asset: &mut Writer,
     ) -> Result<(), Error> {
         self.asset_path.write(asset)?;
-        asset.write_fstring(self.sub_path_string.as_deref())?;
+        match asset.get_engine_version() >= EngineVersion::VER_UE5_8 {
+            true => {
+                let sub_path = self.sub_path_string.as_deref().unwrap_or_default();
+                asset.write_i32::<LE>(sub_path.len() as i32)?;
+                asset.write_all(sub_path.as_bytes())?;
+            }
+            false => {
+                asset.write_fstring(self.sub_path_string.as_deref())?;
+            }
+        }
 
         Ok(())
     }

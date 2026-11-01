@@ -106,6 +106,15 @@ pub struct UnversionedHeader {
 }
 
 impl UnversionedHeader {
+    /// Size in bytes of a zero mask with this many bits
+    fn zero_mask_size(num_bits: usize) -> usize {
+        match num_bits {
+            0..=8 => 1,
+            9..=16 => 2,
+            _ => ((num_bits + 31) / 32) * 4,
+        }
+    }
+
     /// Loads zero mask data from an asset
     /// Matches CUE4Parse's LoadZeroMaskData: fixed sizes for small masks,
     /// 4-byte aligned int array for large masks
@@ -113,14 +122,7 @@ impl UnversionedHeader {
         asset: &mut Reader,
         num_bits: u16,
     ) -> Result<BitVec<u8, Lsb0>, Error> {
-        let num_bytes = if num_bits <= 8 {
-            1
-        } else if num_bits <= 16 {
-            2
-        } else {
-            ((num_bits as usize + 31) / 32) * 4
-        };
-        let mut data = vec![0u8; num_bytes];
+        let mut data = vec![0u8; UnversionedHeader::zero_mask_size(num_bits as usize)];
         asset.read_exact(&mut data)?;
         let mut bv = BitVec::from_vec(data);
         bv.truncate(num_bits as usize);
@@ -196,7 +198,9 @@ impl UnversionedHeader {
         }
 
         if !self.zero_mask.is_empty() {
-            asset.write_all(self.zero_mask.as_raw_slice())?;
+            let mut data = self.zero_mask.as_raw_slice().to_vec();
+            data.resize(UnversionedHeader::zero_mask_size(self.zero_mask.len()), 0);
+            asset.write_all(&data)?;
         }
 
         Ok(())

@@ -8,8 +8,9 @@ use enum_dispatch::enum_dispatch;
 
 use unreal_asset_base::{
     enums::{EArrayDim, ELifetimeCondition},
+    engine_version::EngineVersion,
     flags::{EObjectFlags, EPropertyFlags},
-    reader::{ArchiveReader, ArchiveWriter},
+    reader::{ArchiveReader, ArchiveTrait, ArchiveWriter},
     types::{fname::ToSerializedName, FName, PackageIndex, PackageIndexTrait},
     Error, FNameContainer,
 };
@@ -323,6 +324,11 @@ pub struct FBoolProperty {
     pub value: bool,
 }
 
+/// Cooked UE 5.8 packages no longer serialize `FField` object flags
+fn has_field_flags<Archive: ArchiveTrait<impl PackageIndexTrait>>(asset: &Archive) -> bool {
+    !asset.has_unversioned_properties() || asset.get_engine_version() < EngineVersion::VER_UE5_8
+}
+
 impl FGenericProperty {
     /// Read an `FGenericProperty` from an asset with a serialized type
     pub fn with_serialized_type<Reader: ArchiveReader<impl PackageIndexTrait>>(
@@ -330,12 +336,13 @@ impl FGenericProperty {
         serialized_type: Option<FName>,
     ) -> Result<Self, Error> {
         let name = asset.read_fname()?;
-        let flags: EObjectFlags = EObjectFlags::from_bits(asset.read_u32::<LE>()?)
-            .ok_or_else(|| Error::invalid_file("Invalid object flags".to_string()))?; // todo: maybe other error type than invalid_file?
+        let flags: EObjectFlags = match has_field_flags(asset) {
+            true => EObjectFlags::from_bits_retain(asset.read_u32::<LE>()?),
+            false => EObjectFlags::RF_NO_FLAGS,
+        };
         let array_dim: EArrayDim = asset.read_i32::<LE>()?.try_into()?;
         let element_size = asset.read_i32::<LE>()?;
-        let property_flags: EPropertyFlags = EPropertyFlags::from_bits(asset.read_u64::<LE>()?)
-            .ok_or_else(|| Error::invalid_file("Invalid property flags".to_string()))?;
+        let property_flags: EPropertyFlags = EPropertyFlags::from_bits_retain(asset.read_u64::<LE>()?);
         let rep_index = asset.read_u16::<LE>()?;
         let rep_notify_func = asset.read_fname()?;
         let blueprint_replication_condition: ELifetimeCondition = asset.read_u8()?.try_into()?;
@@ -367,7 +374,9 @@ impl FPropertyTrait for FGenericProperty {
         asset: &mut Writer,
     ) -> Result<(), Error> {
         asset.write_fname(&self.name)?;
-        asset.write_u32::<LE>(self.flags.bits())?;
+        if has_field_flags(asset) {
+            asset.write_u32::<LE>(self.flags.bits())?;
+        }
         asset.write_i32::<LE>(self.array_dim.into())?;
         asset.write_i32::<LE>(self.element_size)?;
         asset.write_u64::<LE>(self.property_flags.bits())?;

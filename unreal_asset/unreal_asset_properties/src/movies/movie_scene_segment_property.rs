@@ -60,7 +60,7 @@ impl MovieSceneSegment {
         let allow_empty = asset.read_i32::<LE>()? != 0;
 
         let impls_length = asset.read_i32::<LE>()?;
-        let mut impls = Vec::with_capacity(impls_length as usize);
+        let mut impls = Vec::new();
 
         for _ in 0..impls_length {
             let mut properties_list = Vec::new();

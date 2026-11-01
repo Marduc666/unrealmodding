@@ -20,6 +20,8 @@ pub struct Import {
     pub object_name: FName,
     /// Is the import optional
     pub optional: bool,
+    /// Package name, only present in the expanded cooked import layout
+    pub package_name: Option<FName>,
 }
 
 // silly `FNameContainer` fix
@@ -42,6 +44,7 @@ impl Import {
             object_name,
             outer_index,
             optional,
+            package_name: None,
         }
     }
 }

@@ -56,7 +56,7 @@ impl<Index: PackageIndexTrait> StructExport<Index> {
         let super_struct = PackageIndex::new(asset.read_i32::<LE>()?);
 
         let num_index_entries = asset.read_i32::<LE>()?;
-        let mut children = Vec::with_capacity(num_index_entries as usize);
+        let mut children = Vec::new();
         for _i in 0..num_index_entries as usize {
             children.push(PackageIndex::new(asset.read_i32::<LE>()?));
         }
@@ -66,7 +66,7 @@ impl<Index: PackageIndexTrait> StructExport<Index> {
         {
             true => {
                 let num_props = asset.read_i32::<LE>()?;
-                let mut props = Vec::with_capacity(num_props as usize);
+                let mut props = Vec::new();
                 for _i in 0..num_props as usize {
                     props.push(FProperty::new(asset)?);
                 }

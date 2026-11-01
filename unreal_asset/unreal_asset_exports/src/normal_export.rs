@@ -23,6 +23,11 @@ pub struct NormalExport<Index: PackageIndexTrait> {
     pub base_export: BaseExport<Index>,
     /// Extra data
     pub extras: Vec<u8>,
+    /// Did this export start with four null bytes, seen in UE 5.4 packages
+    pub has_leading_null_bytes: bool,
+    /// Header of an unversioned export with no properties as there may be no mappings to redo it
+    #[container_ignore]
+    pub empty_unversioned_header: Option<UnversionedHeader>,
     /// Properties
     pub properties: Vec<Property>,
 }
@@ -55,6 +60,7 @@ impl<Index: PackageIndexTrait> NormalExport<Index> {
     ) -> Result<Self, Error> {
         let object_version_ue5 = asset.get_object_version_ue5();
         let is_cdo = base.object_flags.contains(EObjectFlags::RF_CLASS_DEFAULT_OBJECT);
+        let mut has_leading_null_bytes = false;
 
         // UE5.4+ leading 4 null bytes check (UAssetAPI NormalExport.Read)
         // Only applies for versions between DATA_RESOURCES and ASSETREGISTRY_PACKAGEBUILDDEPENDENCIES
@@ -62,8 +68,8 @@ impl<Index: PackageIndexTrait> NormalExport<Index> {
             && object_version_ue5 < ObjectVersionUE5::ASSETREGISTRY_PACKAGEBUILDDEPENDENCIES
             && !is_cdo
         {
-            let dummy = asset.read_i32::<LE>()?;
-            if dummy != 0 {
+            has_leading_null_bytes = asset.read_i32::<LE>()? == 0;
+            if !has_leading_null_bytes {
                 // Not null bytes — seek back, this is property data
                 asset.seek(std::io::SeekFrom::Current(-4))?;
             }
@@ -78,18 +84,13 @@ impl<Index: PackageIndexTrait> NormalExport<Index> {
         {
             properties.push(e);
         }
-
-        // Read ObjectGuid (UAssetAPI: ReadBooleanInt reads i32, not byte)
-        if !is_cdo {
-            let has_guid = asset.read_i32::<LE>()?;
-            if has_guid != 0 {
-                let _guid = asset.read_guid()?;
-            }
-        }
+        let empty_unversioned_header = unversioned_header.filter(|_| properties.is_empty());
 
         Ok(NormalExport {
             base_export: base.clone(),
             extras: Vec::new(),
+            has_leading_null_bytes,
+            empty_unversioned_header,
 
             properties,
         })
@@ -98,6 +99,14 @@ impl<Index: PackageIndexTrait> NormalExport<Index> {
 
 impl<Index: PackageIndexTrait> ExportTrait<Index> for NormalExport<Index> {
     fn write<Writer: ArchiveWriter<Index>>(&self, asset: &mut Writer) -> Result<(), Error> {
+        if self.has_leading_null_bytes {
+            asset.write_i32::<LE>(0)?;
+        }
+
+        if let (true, Some(header)) = (self.properties.is_empty(), &self.empty_unversioned_header) {
+            return header.write(asset);
+        }
+
         let (unversioned_header, sorted_properties) = match generate_unversioned_header(
             asset,
             &self.properties,
