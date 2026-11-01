@@ -785,6 +785,26 @@ impl Property {
                     ObjectProperty::new(asset, name, ancestry, include_header, duplication_index)?
                         .into()
                 }
+                // the same as an object in unversioned properties as they don't have a tag
+                "WeakObjectProperty" | "InterfaceProperty"
+                    if asset.has_unversioned_properties() =>
+                {
+                    ObjectProperty::new(asset, name, ancestry, include_header, duplication_index)?
+                        .into()
+                }
+                // unversioned properties don't store their length so this has to be known
+                "LazyObjectProperty" if asset.has_unversioned_properties() => {
+                    UnknownProperty::new(
+                        asset,
+                        name,
+                        ancestry,
+                        include_header,
+                        size_of::<Guid>() as i64,
+                        duplication_index,
+                        type_name.clone(),
+                    )?
+                    .into()
+                }
                 "AssetObjectProperty" => AssetObjectProperty::new(
                     asset,
                     name,
@@ -1339,6 +1359,10 @@ impl Property {
                 )?
                 .into(),
 
+                // without a length nothing after this could be read correctly
+                _ if asset.has_unversioned_properties() => {
+                    return Err(PropertyError::no_type(ty, &ancestry).into());
+                }
                 _ => UnknownProperty::new(
                     asset,
                     name,
