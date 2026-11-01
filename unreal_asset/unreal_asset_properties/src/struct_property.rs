@@ -89,14 +89,23 @@ impl StructProperty {
         struct_guid: Option<Guid>,
         property_guid: Option<Guid>,
     ) -> Result<Self, Error> {
-        if let Some(struct_mapping) = asset
+        if let Some(ref st) = struct_type {
+            let lookup_ancestry = ancestry.with_parent(st.clone());
+            if let Some(struct_mapping) = asset
+                .get_mappings()
+                .and_then(|e| e.get_property(&name, &lookup_ancestry))
+                .and_then(|e| cast!(UsmapPropertyData, UsmapStructPropertyData, &e.property_data))
+            {
+                if struct_type.as_ref().map(|e| e == "Generic").unwrap_or(true) {
+                    struct_type = Some(FName::new_dummy(struct_mapping.struct_type.clone(), 0));
+                }
+            }
+        } else if let Some(struct_mapping) = asset
             .get_mappings()
             .and_then(|e| e.get_property(&name, &ancestry))
             .and_then(|e| cast!(UsmapPropertyData, UsmapStructPropertyData, &e.property_data))
         {
-            if struct_type.as_ref().map(|e| e == "Generic").unwrap_or(true) {
-                struct_type = Some(FName::new_dummy(struct_mapping.struct_type.clone(), 0));
-            }
+            struct_type = Some(FName::new_dummy(struct_mapping.struct_type.clone(), 0));
         }
 
         if asset.has_unversioned_properties() && struct_type.is_none() {

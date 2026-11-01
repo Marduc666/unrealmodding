@@ -180,8 +180,18 @@ impl ArrayProperty {
                 entries.push(data.into());
             }
         } else if num_entries > 0 {
-            let size_est_1 = length / num_entries as i64;
-            let size_est_2 = (length - 4) / num_entries as i64;
+            // For unversioned properties, length is always 1 (hardcoded), so size_est would be 0
+            // for arrays with >1 entry. Use 1 instead to prevent StructProperty early return.
+            let size_est_1 = if asset.has_unversioned_properties() {
+                1
+            } else {
+                length / num_entries as i64
+            };
+            let size_est_2 = if asset.has_unversioned_properties() {
+                0
+            } else {
+                (length - 4) / num_entries as i64
+            };
             let array_type = array_type
                 .as_ref()
                 .ok_or_else(|| Error::invalid_file("Unknown array type".to_string()))?;

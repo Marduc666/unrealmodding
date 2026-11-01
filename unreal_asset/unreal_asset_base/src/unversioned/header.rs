@@ -17,7 +17,7 @@ pub struct UnversionedHeaderFragment {
     /// Number of subsequent property values stured
     pub value_num: u8,
     /// First element index of this fragment
-    pub first_num: u8,
+    pub first_num: u16,
     /// Is this the last header fragment?
     pub is_last: bool,
     /// Has zeros
@@ -48,8 +48,11 @@ impl UnversionedHeaderFragment {
     const IS_LAST_MASK: u16 = 0x0100u16;
 
     /// Get last element index of this fragment
-    pub fn get_last_num(&self) -> u8 {
-        self.first_num + self.value_num - 1
+    pub fn get_last_num(&self) -> u16 {
+        if self.value_num == 0 {
+            return self.first_num.wrapping_sub(1);
+        }
+        self.first_num + self.value_num as u16 - 1
     }
 
     /// Read an `UnversionedHeaderFragment` from an asset
@@ -104,26 +107,24 @@ pub struct UnversionedHeader {
 
 impl UnversionedHeader {
     /// Loads zero mask data from an asset
+    /// Matches CUE4Parse's LoadZeroMaskData: fixed sizes for small masks,
+    /// 4-byte aligned int array for large masks
     fn load_zero_mask_data<Reader: ArchiveReader<impl PackageIndexTrait>>(
         asset: &mut Reader,
         num_bits: u16,
     ) -> Result<BitVec<u8, Lsb0>, Error> {
-        if num_bits <= 8 {
-            let mut data = [0u8; 1];
-            asset.read_exact(&mut data)?;
-            Ok(BitVec::from_vec(data.to_vec()))
+        let num_bytes = if num_bits <= 8 {
+            1
         } else if num_bits <= 16 {
-            let mut data = [0u8; 2];
-            asset.read_exact(&mut data)?;
-            Ok(BitVec::from_vec(data.to_vec()))
+            2
         } else {
-            let num_bytes = ((num_bits + 31) / 32) * 4;
-            let mut data = Vec::with_capacity(num_bytes as usize);
-            for _ in 0..num_bytes {
-                data.push(asset.read_u8()?);
-            }
-            Ok(BitVec::from_vec(data.to_vec()))
-        }
+            ((num_bits as usize + 31) / 32) * 4
+        };
+        let mut data = vec![0u8; num_bytes];
+        asset.read_exact(&mut data)?;
+        let mut bv = BitVec::from_vec(data);
+        bv.truncate(num_bits as usize);
+        Ok(bv)
     }
 
     /// Read `UnversionedHeader` from an asset
@@ -136,14 +137,14 @@ impl UnversionedHeader {
 
         let mut fragments = Vec::new();
 
-        let mut first_num = 0;
+        let mut first_num: u16 = 0;
         let mut zero_mask_num = 0u16;
         let mut unmasked_num = 0u16;
 
         loop {
             let mut fragment = UnversionedHeaderFragment::read(asset)?;
-            fragment.first_num = first_num + fragment.skip_num;
-            first_num += fragment.skip_num + fragment.value_num;
+            fragment.first_num = first_num + fragment.skip_num as u16;
+            first_num = fragment.first_num + fragment.value_num as u16;
 
             fragments.push(fragment);
 

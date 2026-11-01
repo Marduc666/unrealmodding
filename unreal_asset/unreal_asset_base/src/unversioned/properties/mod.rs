@@ -85,6 +85,31 @@ pub enum EPropertyType {
     EnumProperty,
     /// FieldPath
     FieldPathProperty,
+    /// Optional
+    OptionalProperty,
+    /// Utf8Str
+    Utf8StrProperty,
+    /// AnsiStr
+    AnsiStrProperty,
+    /// Class
+    ClassProperty,
+    /// MulticastInlineDelegate
+    MulticastInlineDelegateProperty,
+    /// SoftClass
+    SoftClassProperty,
+    /// VerseString
+    VerseStringProperty,
+    /// VerseDynamic
+    VerseDynamicProperty,
+    /// VerseFunction
+    VerseFunctionProperty,
+
+    /// Custom
+    #[allow(non_camel_case_types)]
+    CustomProperty_FD = 0xFD,
+    /// Custom
+    #[allow(non_camel_case_types)]
+    CustomProperty_FE = 0xFE,
 
     /// Unknown
     Unknown = 0xFF,
@@ -121,6 +146,17 @@ impl std::fmt::Display for EPropertyType {
             EPropertyType::SetProperty => "SetProperty",
             EPropertyType::EnumProperty => "EnumProperty",
             EPropertyType::FieldPathProperty => "FieldPathProperty",
+            EPropertyType::OptionalProperty => "OptionalProperty",
+            EPropertyType::Utf8StrProperty => "Utf8StrProperty",
+            EPropertyType::AnsiStrProperty => "AnsiStrProperty",
+            EPropertyType::ClassProperty => "ClassProperty",
+            EPropertyType::MulticastInlineDelegateProperty => "MulticastInlineDelegateProperty",
+            EPropertyType::SoftClassProperty => "SoftClassProperty",
+            EPropertyType::VerseStringProperty => "VerseStringProperty",
+            EPropertyType::VerseDynamicProperty => "VerseDynamicProperty",
+            EPropertyType::VerseFunctionProperty => "VerseFunctionProperty",
+            EPropertyType::CustomProperty_FD => "CustomProperty_FD",
+            EPropertyType::CustomProperty_FE => "CustomProperty_FE",
             EPropertyType::Unknown => "Unknown",
         })
     }
@@ -170,6 +206,7 @@ impl UsmapPropertyData {
             EPropertyType::MapProperty => UsmapMapPropertyData::new(asset)?.into(),
             EPropertyType::SetProperty => UsmapSetPropertyData::new(asset)?.into(),
             EPropertyType::EnumProperty => UsmapEnumPropertyData::new(asset)?.into(),
+            EPropertyType::OptionalProperty => UsmapArrayPropertyData::new(asset)?.into(),
             _ => UsmapShallowPropertyData {
                 property_type: prop_type,
             }

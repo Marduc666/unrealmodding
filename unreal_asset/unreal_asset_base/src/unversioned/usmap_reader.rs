@@ -51,6 +51,9 @@ impl<'parent_reader, 'asset, R: ArchiveReader<PackageIndex>>
     pub fn read_name(&mut self) -> Result<String, Error> {
         let index = self.read_i32::<LE>()?;
         if index < 0 {
+            if index == -1 {
+                return Ok(String::new());
+            }
             return Err(UsmapError::name_map_index_out_of_range(self.name_map.len(), index).into());
         }
         self.name_map.get(index as usize).cloned().ok_or_else(|| {

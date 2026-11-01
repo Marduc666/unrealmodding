@@ -1,6 +1,12 @@
 //! Enum property
 
 use crate::property_prelude::*;
+use unreal_asset_base::unversioned::properties::{
+    array_property::UsmapArrayPropertyData,
+    enum_property::UsmapEnumPropertyData,
+    map_property::UsmapMapPropertyData,
+    set_property::UsmapSetPropertyData,
+};
 
 /// Enum property
 #[derive(FNameContainer, Debug, Clone, Default, PartialEq, Eq, Hash)]
@@ -35,17 +41,55 @@ impl EnumProperty {
         let mut enum_type: Option<FName> = None;
         let mut inner_type: Option<FName> = None;
         if asset.has_unversioned_properties() {
-            if let Some(enum_data) = asset
+            // Look up the property info from the usmap
+            let enum_data: Option<&UsmapEnumPropertyData> = asset
                 .get_mappings()
                 .and_then(|e| e.get_property(&name, &ancestry))
-                .and_then(|e| cast!(UsmapPropertyData, UsmapEnumPropertyData, &e.property_data))
-            {
-                let enum_ty = FName::new_dummy(enum_data.name.clone(), 0);
-                let inner_ty =
-                    FName::new_dummy(enum_data.inner_property.get_property_type().to_string(), 0);
+                .and_then(|e| {
+                    // Direct EnumProperty
+                    if let Some(data) = cast!(UsmapPropertyData, UsmapEnumPropertyData, &e.property_data) {
+                        return Some(data);
+                    }
+                    // Array element — extract inner EnumProperty
+                    if let UsmapPropertyData::UsmapArrayPropertyData(ref arr) = e.property_data {
+                        if let UsmapPropertyData::UsmapEnumPropertyData(ref inner) = *arr.inner_type {
+                            return Some(inner);
+                        }
+                    }
+                    // Map value — extract inner EnumProperty
+                    if let UsmapPropertyData::UsmapMapPropertyData(ref map) = e.property_data {
+                        if let UsmapPropertyData::UsmapEnumPropertyData(ref inner) = *map.value_type {
+                            return Some(inner);
+                        }
+                    }
+                    // Set element — extract inner EnumProperty
+                    if let UsmapPropertyData::UsmapSetPropertyData(ref set) = e.property_data {
+                        if let UsmapPropertyData::UsmapEnumPropertyData(ref inner) = *set.inner_type {
+                            return Some(inner);
+                        }
+                    }
+                    None
+                });
 
-                if inner_ty == "ByteProperty" {
-                    let enum_index = asset.read_u8()?;
+            if let Some(enum_data) = enum_data {
+                let enum_ty = FName::new_dummy(enum_data.name.clone(), 0);
+                let inner_ty_str = enum_data.inner_property.get_property_type().to_string();
+                let inner_ty = FName::new_dummy(inner_ty_str.clone(), 0);
+
+                // For numeric inner types, read the raw value and map to enum name
+                let numeric_value: Option<i64> = match inner_ty_str.as_str() {
+                    "ByteProperty" => Some(asset.read_u8()? as i64),
+                    "UInt16Property" => Some(asset.read_u16::<LE>()? as i64),
+                    "UInt32Property" => Some(asset.read_u32::<LE>()? as i64),
+                    "UInt64Property" => Some(asset.read_u64::<LE>()? as i64),
+                    "Int8Property" => Some(asset.read_i8()? as i64),
+                    "Int16Property" => Some(asset.read_i16::<LE>()? as i64),
+                    "IntProperty" => Some(asset.read_i32::<LE>()? as i64),
+                    "Int64Property" => Some(asset.read_i64::<LE>()?),
+                    _ => None,
+                };
+
+                if let Some(enum_index) = numeric_value {
                     let info = enum_ty
                         .get_content(|ty| asset.get_mappings().unwrap().enum_map.get_by_key(ty))
                         .ok_or_else(|| {
@@ -53,9 +97,10 @@ impl EnumProperty {
                                 "Missing unversioned info for: ".to_string() + ty
                             }))
                         })?;
-                    let value = match enum_index == u8::MAX {
-                        true => None,
-                        false => Some(FName::new_dummy(info[enum_index as usize].clone(), 0)),
+                    let value = if enum_index < 0 || enum_index as usize >= info.len() {
+                        None
+                    } else {
+                        Some(FName::new_dummy(info[enum_index as usize].clone(), 0))
                     };
 
                     return Ok(EnumProperty {

@@ -826,8 +826,8 @@ impl<'a, C: Read + Seek> Asset<C> {
             return None;
         }
 
-        let index = -index.index - 1;
-        if index < 0 || index > self.imports.len() as i32 {
+        let index = index.index.checked_neg().map(|v| v - 1)?;
+        if index < 0 || index >= self.imports.len() as i32 {
             return None;
         }
 

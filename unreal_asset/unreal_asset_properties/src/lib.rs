@@ -530,8 +530,10 @@ impl Property {
         let length: i32;
         let duplication_index: i32;
         let mut is_zero = false;
+        let mut effective_include_header = include_header;
 
         if asset.has_unversioned_properties() {
+            effective_include_header = false;
             let header = unversioned_header.ok_or_else(PropertyError::no_unversioned_header)?;
             let mappings = asset
                 .get_mappings()
@@ -539,14 +541,28 @@ impl Property {
             let parent_name = ancestry.get_parent().ok_or_else(PropertyError::no_parent)?;
 
             loop {
+                if header.current_fragment_index >= header.fragments.len() {
+                    return Ok(None);
+                }
                 let current_fragment = header.fragments[header.current_fragment_index];
-                if header.unversioned_property_index > current_fragment.get_last_num() as usize {
+                // Skip fragments with no values (val=0)
+                if current_fragment.value_num == 0 {
+                    header.current_fragment_index += 1;
+                    if header.current_fragment_index < header.fragments.len() {
+                        header.unversioned_property_index =
+                            header.fragments[header.current_fragment_index].first_num as usize;
+                    }
+                    continue;
+                }
+                if header.unversioned_property_index <= current_fragment.get_last_num() as usize {
                     break;
                 }
 
                 header.current_fragment_index += 1;
-                header.unversioned_property_index =
-                    header.fragments[header.current_fragment_index].first_num as usize;
+                if header.current_fragment_index < header.fragments.len() {
+                    header.unversioned_property_index =
+                        header.fragments[header.current_fragment_index].first_num as usize;
+                }
             }
 
             let mut practicing_unversioned_property_index = header.unversioned_property_index;
@@ -562,10 +578,15 @@ impl Property {
             while practicing_unversioned_property_index >= schema.prop_count as usize {
                 practicing_unversioned_property_index -= schema.prop_count as usize;
 
+                if schema.super_type.is_empty() {
+                    return Ok(None);
+                }
+
+                let super_type = &schema.super_type;
                 let new_schema =
                     mappings
                         .schemas
-                        .get_by_key(&schema.super_type)
+                        .get_by_key(super_type.as_str())
                         .ok_or_else(|| {
                             PropertyError::no_schema(
                                 parent_name.get_owned_content(),
@@ -582,21 +603,22 @@ impl Property {
                 .unwrap();
             header.unversioned_property_index += 1;
 
+            let current_fragment = header.fragments[header.current_fragment_index.min(header.fragments.len() - 1)];
+            if current_fragment.has_zeros {
+                // CUE4Parse: HasNonZero = !ZeroMask[i]
+                // ZeroMask bit=1 → property is zero, bit=0 → non-zero
+                is_zero = match header.zero_mask_index < header.zero_mask.len() {
+                    true => header.zero_mask[header.zero_mask_index],
+                    false => false,
+                };
+                header.zero_mask_index += 1;
+            }
+
             name = FName::new_dummy(property.name.clone(), 0);
             property_type =
                 FName::new_dummy(property.property_data.get_property_type().to_string(), 0);
             length = 1;
             duplication_index = property.array_index as i32;
-
-            let current_fragment = header.fragments[header.current_fragment_index];
-            if current_fragment.has_zeros {
-                is_zero = match header.zero_mask_index < header.zero_mask.len() {
-                    true => header.zero_mask[header.zero_mask_index],
-                    false => false,
-                };
-
-                header.zero_mask_index += 1;
-            }
         } else {
             name = asset.read_fname()?;
             if name == "None" {
@@ -613,7 +635,7 @@ impl Property {
             &property_type,
             name,
             ancestry,
-            include_header,
+            effective_include_header,
             length as i64,
             0,
             duplication_index,
@@ -1571,7 +1593,7 @@ pub fn generate_unversioned_header<W: ArchiveWriter<impl PackageIndexTrait>>(
             let fragment = UnversionedHeaderFragment {
                 skip_num: skip_num as u8,
                 value_num: value_num as u8,
-                first_num: start_index as u8,
+                first_num: start_index as u16,
                 is_last: false,
                 has_zeros,
             };
@@ -1598,7 +1620,7 @@ pub fn generate_unversioned_header<W: ArchiveWriter<impl PackageIndexTrait>>(
 
     for fragment in fragments.iter().filter(|e| e.has_zeros) {
         for i in 0..fragment.value_num {
-            let is_zero = zero_properties.contains(&((fragment.first_num + i) as u32));
+            let is_zero = zero_properties.contains(&((fragment.first_num + i as u16) as u32));
             if !is_zero {
                 has_non_zero_values = true;
             }

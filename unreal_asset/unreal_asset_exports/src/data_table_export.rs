@@ -59,7 +59,6 @@ impl<Index: PackageIndexTrait> DataTableExport<Index> {
             }
         }
 
-        asset.read_i32::<LE>()?;
         let num_entries = asset.read_i32::<LE>()? as usize;
         let mut data = Vec::with_capacity(num_entries);
 
