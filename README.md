@@ -5,6 +5,22 @@
 
 Tools for creating and loading Unreal Engine Mods. Developed for Astroneer.
 
+> This is a fork of [AstroTechies/unrealmodding](https://github.com/AstroTechies/unrealmodding) that builds on the
+> [ASEAN Motor Club fork](https://github.com/ASEAN-Motor-Club/unrealmodding) and adds support for Unreal Engine 5.3 to
+> 5.8 to `unreal_asset`, for the map editor [stove](https://github.com/Marduc666/stove). It adds:
+>
+> - engine versions 5.3 to 5.8 and the package summary fields added up to them
+> - unversioned properties written the way the engine builds them, including enums, bitfield bools and weak,
+>   interface and lazy object properties
+> - the 5.8 changes to cooked imports, FField flags and soft object paths, including the expanded import layout some
+>   5.8 games like The Last Caretaker use
+> - blueprint schemas read from cooked packages when the usmap doesn't have them
+> - the data resource table bulk data has used since 5.2
+>
+> `unreal_asset/tests/modern_engines.rs` reads and saves real assets. Point `UE_TEST_ASSETS` at UAssetAPI's test assets,
+> or `UE_TEST_GAME` at a game extracted with [retoc](https://github.com/trumank/retoc) as
+> `<folder>;<usmap>;<game>;<maps|all|blueprints>`, and run `cargo test --test modern_engines -- --nocapture`.
+
 ## Crates
 
 This repo contrains multiple user facing crates for working with Unreal Engine file formats and creating Mods.
