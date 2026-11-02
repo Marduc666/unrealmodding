@@ -106,7 +106,7 @@ macro_rules! impl_multicast {
                 let property_guid = optional_guid!(asset, include_header);
 
                 let length = asset.read_i32::<LE>()?;
-                let mut value = Vec::with_capacity(length as usize);
+                let mut value = Vec::new();
                 for _ in 0..length {
                     value.push(Delegate::new(
                         PackageIndex::new(asset.read_i32::<LE>()?),

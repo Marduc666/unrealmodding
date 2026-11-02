@@ -93,6 +93,9 @@ pub struct BoolProperty {
     pub duplication_index: i32,
     /// Boolean value
     pub value: bool,
+    /// Byte the value was read from, bitfields can be stored as their mask instead of one
+    #[container_ignore]
+    pub raw_value: u8,
 }
 impl_property_data_trait!(BoolProperty);
 
@@ -234,7 +237,7 @@ impl BoolProperty {
         _length: i64,
         duplication_index: i32,
     ) -> Result<Self, Error> {
-        let value = asset.read_bool()?;
+        let raw_value = asset.read_u8()?;
         let property_guid = optional_guid!(asset, include_header);
 
         Ok(BoolProperty {
@@ -242,7 +245,8 @@ impl BoolProperty {
             ancestry,
             property_guid,
             duplication_index,
-            value,
+            value: raw_value != 0,
+            raw_value,
         })
     }
 }
@@ -253,7 +257,10 @@ impl PropertyTrait for BoolProperty {
         asset: &mut Writer,
         include_header: bool,
     ) -> Result<usize, Error> {
-        asset.write_bool(self.value)?;
+        asset.write_u8(match self.value {
+            true => self.raw_value.max(1),
+            false => 0,
+        })?;
         optional_guid_write!(self, asset, include_header);
         Ok(0)
     }

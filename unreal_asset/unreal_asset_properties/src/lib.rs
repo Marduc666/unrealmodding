@@ -530,8 +530,10 @@ impl Property {
         let length: i32;
         let duplication_index: i32;
         let mut is_zero = false;
+        let mut effective_include_header = include_header;
 
         if asset.has_unversioned_properties() {
+            effective_include_header = false;
             let header = unversioned_header.ok_or_else(PropertyError::no_unversioned_header)?;
             let mappings = asset
                 .get_mappings()
@@ -539,14 +541,28 @@ impl Property {
             let parent_name = ancestry.get_parent().ok_or_else(PropertyError::no_parent)?;
 
             loop {
+                if header.current_fragment_index >= header.fragments.len() {
+                    return Ok(None);
+                }
                 let current_fragment = header.fragments[header.current_fragment_index];
-                if header.unversioned_property_index > current_fragment.get_last_num() as usize {
+                // Skip fragments with no values (val=0)
+                if current_fragment.value_num == 0 {
+                    header.current_fragment_index += 1;
+                    if header.current_fragment_index < header.fragments.len() {
+                        header.unversioned_property_index =
+                            header.fragments[header.current_fragment_index].first_num as usize;
+                    }
+                    continue;
+                }
+                if header.unversioned_property_index <= current_fragment.get_last_num() as usize {
                     break;
                 }
 
                 header.current_fragment_index += 1;
-                header.unversioned_property_index =
-                    header.fragments[header.current_fragment_index].first_num as usize;
+                if header.current_fragment_index < header.fragments.len() {
+                    header.unversioned_property_index =
+                        header.fragments[header.current_fragment_index].first_num as usize;
+                }
             }
 
             let mut practicing_unversioned_property_index = header.unversioned_property_index;
@@ -561,11 +577,11 @@ impl Property {
 
             while practicing_unversioned_property_index >= schema.prop_count as usize {
                 practicing_unversioned_property_index -= schema.prop_count as usize;
-
+                let super_type = &schema.super_type;
                 let new_schema =
                     mappings
                         .schemas
-                        .get_by_key(&schema.super_type)
+                        .get_by_key(super_type.as_str())
                         .ok_or_else(|| {
                             PropertyError::no_schema(
                                 parent_name.get_owned_content(),
@@ -576,27 +592,35 @@ impl Property {
                 schema = new_schema;
             }
 
+            // schemas can have gaps as only serializable properties are mapped
             let property = schema
                 .properties
-                .get_by_index(practicing_unversioned_property_index)
-                .unwrap();
+                .values()
+                .find(|e| e.schema_index as usize == practicing_unversioned_property_index)
+                .ok_or_else(|| {
+                    PropertyError::no_schema(
+                        parent_name.get_owned_content(),
+                        practicing_unversioned_property_index,
+                    )
+                })?;
             header.unversioned_property_index += 1;
+
+            let current_fragment = header.fragments[header.current_fragment_index.min(header.fragments.len() - 1)];
+            if current_fragment.has_zeros {
+                // CUE4Parse: HasNonZero = !ZeroMask[i]
+                // ZeroMask bit=1 → property is zero, bit=0 → non-zero
+                is_zero = match header.zero_mask_index < header.zero_mask.len() {
+                    true => header.zero_mask[header.zero_mask_index],
+                    false => false,
+                };
+                header.zero_mask_index += 1;
+            }
 
             name = FName::new_dummy(property.name.clone(), 0);
             property_type =
                 FName::new_dummy(property.property_data.get_property_type().to_string(), 0);
             length = 1;
             duplication_index = property.array_index as i32;
-
-            let current_fragment = header.fragments[header.current_fragment_index];
-            if current_fragment.has_zeros {
-                is_zero = match header.zero_mask_index < header.zero_mask.len() {
-                    true => header.zero_mask[header.zero_mask_index],
-                    false => false,
-                };
-
-                header.zero_mask_index += 1;
-            }
         } else {
             name = asset.read_fname()?;
             if name == "None" {
@@ -613,7 +637,7 @@ impl Property {
             &property_type,
             name,
             ancestry,
-            include_header,
+            effective_include_header,
             length as i64,
             0,
             duplication_index,
@@ -636,7 +660,9 @@ impl Property {
         is_zero: bool,
     ) -> Result<Self, Error> {
         if is_zero {
-            return Ok(EmptyProperty::new(type_name.clone(), name, ancestry).into());
+            let mut empty = EmptyProperty::new(type_name.clone(), name, ancestry);
+            empty.duplication_index = duplication_index;
+            return Ok(empty.into());
         }
 
         type_name.get_content(|ty| {
@@ -758,6 +784,26 @@ impl Property {
                 "ObjectProperty" => {
                     ObjectProperty::new(asset, name, ancestry, include_header, duplication_index)?
                         .into()
+                }
+                // the same as an object in unversioned properties as they don't have a tag
+                "WeakObjectProperty" | "InterfaceProperty"
+                    if asset.has_unversioned_properties() =>
+                {
+                    ObjectProperty::new(asset, name, ancestry, include_header, duplication_index)?
+                        .into()
+                }
+                // unversioned properties don't store their length so this has to be known
+                "LazyObjectProperty" if asset.has_unversioned_properties() => {
+                    UnknownProperty::new(
+                        asset,
+                        name,
+                        ancestry,
+                        include_header,
+                        size_of::<Guid>() as i64,
+                        duplication_index,
+                        type_name.clone(),
+                    )?
+                    .into()
                 }
                 "AssetObjectProperty" => AssetObjectProperty::new(
                     asset,
@@ -1313,6 +1359,10 @@ impl Property {
                 )?
                 .into(),
 
+                // without a length nothing after this could be read correctly
+                _ if asset.has_unversioned_properties() => {
+                    return Err(PropertyError::no_type(ty, &ancestry).into());
+                }
                 _ => UnknownProperty::new(
                     asset,
                     name,
@@ -1333,6 +1383,13 @@ impl Property {
         asset: &mut Writer,
         include_header: bool,
     ) -> Result<usize, Error> {
+        // the unversioned header has all the information a property tag would
+        if asset.has_unversioned_properties() {
+            let begin = asset.position();
+            property.write(asset, false)?;
+            return Ok(begin as usize);
+        }
+
         asset.write_fname(&property.get_name())?;
 
         let property_serialized_name = property.to_serialized_name();
@@ -1483,13 +1540,27 @@ pub fn generate_unversioned_header<W: ArchiveWriter<impl PackageIndexTrait>>(
         return Ok(None);
     };
 
-    let mut first_global_index = u32::MAX;
-    let mut last_global_index = u32::MIN;
-
-    let mut properties_to_process = HashSet::new();
-    let mut zero_properties: HashSet<u32> = HashSet::new();
-
+    let mut indexed_properties = Vec::with_capacity(properties.len());
+    let mut used_indices = HashSet::new();
     for property in properties {
+        let shadowed = property.get_ancestry().get_parent().and_then(|parent| {
+            parent.get_content(|schema| {
+                mappings
+                    .get_global_indices(
+                        &property.get_name(),
+                        schema,
+                        property.get_duplication_index() as u32,
+                    )
+                    .into_iter()
+                    .find(|index| !used_indices.contains(index))
+            })
+        });
+        if let Some(global_index) = shadowed {
+            used_indices.insert(global_index);
+            indexed_properties.push((global_index, property));
+            continue;
+        }
+
         let Some((_, global_index)) = mappings.get_property_with_duplication_index(
             &property.get_name(),
             property.get_ancestry(),
@@ -1499,87 +1570,71 @@ pub fn generate_unversioned_header<W: ArchiveWriter<impl PackageIndexTrait>>(
                 Err(PropertyError::no_mapping(name, property.get_ancestry()).into())
             });
         };
-
-        if matches!(property, Property::EmptyProperty(_)) {
-            zero_properties.insert(global_index);
+        if !used_indices.insert(global_index) {
+            return property.get_name().get_content(|name| {
+                Err(PropertyError::no_mapping(name, property.get_ancestry()).into())
+            });
         }
-
-        first_global_index = first_global_index.min(global_index);
-        last_global_index = last_global_index.max(global_index);
-        properties_to_process.insert(global_index);
+        indexed_properties.push((global_index, property));
     }
+    indexed_properties.sort_by_key(|(index, _)| *index);
 
-    // Sort properties and generate header fragments
-    let mut sorted_properties = Vec::new();
+    let zero_properties: HashSet<u32> = indexed_properties
+        .iter()
+        .filter(|(_, property)| matches!(property, Property::EmptyProperty(_)))
+        .map(|(index, _)| *index)
+        .collect();
+
+    const MAX_FRAGMENT_NUM: u32 = i8::MAX as u32;
 
     let mut fragments: Vec<UnversionedHeaderFragment> = Vec::new();
-    let mut last_num_before_fragment = 0;
-
-    if !properties_to_process.is_empty() {
-        loop {
-            let mut has_zeros = false;
-
-            // Find next contiguous properties chunk
-            let mut start_index = last_num_before_fragment;
-            while !properties_to_process.contains(&start_index) && start_index <= last_global_index
-            {
-                start_index += 1;
-            }
-
-            if start_index > last_global_index {
-                break;
-            }
-
-            // Process contiguous properties chunk
-            let mut end_index = start_index;
-            while properties_to_process.contains(&end_index) {
-                if zero_properties.contains(&end_index) {
-                    has_zeros = true;
-                }
-
-                // todo: clone might not be needed
-                sorted_properties.push(properties[end_index as usize].clone());
-                end_index += 1;
-            }
-
-            // Create extra fragments for this chunk
-            let mut skip_num = start_index - last_num_before_fragment - 1;
-            let mut value_num = (end_index - 1) - start_index + 1;
-
-            while skip_num > i8::MAX as u32 {
-                fragments.push(UnversionedHeaderFragment {
-                    skip_num: i8::MAX as u8,
-                    value_num: 0,
-                    first_num: 0,
-                    is_last: false,
-                    has_zeros: false,
-                });
-                skip_num -= i8::MAX as u32;
-            }
-            while value_num > i8::MAX as u32 {
-                fragments.push(UnversionedHeaderFragment {
-                    skip_num: 0,
-                    value_num: i8::MAX as u8,
-                    first_num: 0,
-                    is_last: false,
-                    has_zeros: false,
-                });
-                value_num -= i8::MAX as u32;
-            }
-
-            // Create the main fragment for this chunk
-            let fragment = UnversionedHeaderFragment {
-                skip_num: skip_num as u8,
-                value_num: value_num as u8,
-                first_num: start_index as u8,
-                is_last: false,
-                has_zeros,
-            };
-
-            fragments.push(fragment);
-            last_num_before_fragment = end_index - 1;
+    let mut next_index = 0;
+    let mut position = 0;
+    while position < indexed_properties.len() {
+        // Find next contiguous properties chunk
+        let start_index = indexed_properties[position].0;
+        let mut value_num = 1;
+        while indexed_properties
+            .get(position + value_num as usize)
+            .is_some_and(|(index, _)| *index == start_index + value_num)
+        {
+            value_num += 1;
         }
-    } else {
+
+        let mut skip_num = start_index - next_index;
+        while skip_num > MAX_FRAGMENT_NUM {
+            fragments.push(UnversionedHeaderFragment {
+                skip_num: MAX_FRAGMENT_NUM as u8,
+                value_num: 0,
+                first_num: 0,
+                is_last: false,
+                has_zeros: false,
+            });
+            skip_num -= MAX_FRAGMENT_NUM;
+        }
+
+        // Split the chunk over as many fragments as it needs
+        let mut first_num = start_index;
+        let chunk_end = start_index + value_num;
+        while first_num < chunk_end {
+            let fragment_values = u32::min(chunk_end - first_num, MAX_FRAGMENT_NUM);
+            fragments.push(UnversionedHeaderFragment {
+                skip_num: skip_num as u8,
+                value_num: fragment_values as u8,
+                first_num: first_num as u16,
+                is_last: false,
+                has_zeros: (first_num..first_num + fragment_values)
+                    .any(|index| zero_properties.contains(&index)),
+            });
+            skip_num = 0;
+            first_num += fragment_values;
+        }
+
+        next_index = chunk_end;
+        position += value_num as usize;
+    }
+
+    if fragments.is_empty() {
         fragments.push(parent_name.get_content(|name| UnversionedHeaderFragment {
             skip_num: usize::min(mappings.get_all_properties(name).len(), i8::MAX as usize) as u8,
             value_num: 0,
@@ -1593,12 +1648,17 @@ pub fn generate_unversioned_header<W: ArchiveWriter<impl PackageIndexTrait>>(
         fragment.is_last = true;
     }
 
+    let sorted_properties = indexed_properties
+        .into_iter()
+        .map(|(_, property)| property.clone())
+        .collect();
+
     let mut has_non_zero_values = false;
     let mut zero_mask = BitVec::<u8, Lsb0>::new();
 
     for fragment in fragments.iter().filter(|e| e.has_zeros) {
         for i in 0..fragment.value_num {
-            let is_zero = zero_properties.contains(&((fragment.first_num + i) as u32));
+            let is_zero = zero_properties.contains(&((fragment.first_num + i as u16) as u32));
             if !is_zero {
                 has_non_zero_values = true;
             }

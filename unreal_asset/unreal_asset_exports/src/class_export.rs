@@ -79,7 +79,7 @@ impl<Index: PackageIndexTrait> ClassExport<Index> {
         let struct_export = StructExport::from_base(base, asset)?;
 
         let num_func_index_entries = asset.read_i32::<LE>()? as usize;
-        let mut func_map = IndexedMap::with_capacity(num_func_index_entries);
+        let mut func_map = IndexedMap::new();
         for _i in 0..num_func_index_entries {
             let name = asset.read_fname()?;
             let function_export = PackageIndex::new(asset.read_i32::<LE>()?);
@@ -118,7 +118,7 @@ impl<Index: PackageIndexTrait> ClassExport<Index> {
             asset.seek(SeekFrom::Start(interfaces_start.unwrap()))?;
         }
         let num_interfaces = asset.read_i32::<LE>()? as usize;
-        let mut interfaces = Vec::with_capacity(num_interfaces);
+        let mut interfaces = Vec::new();
         for _i in 0..num_interfaces {
             interfaces.push(SerializedInterfaceReference::new(
                 PackageIndex::new(asset.read_i32::<LE>()?),

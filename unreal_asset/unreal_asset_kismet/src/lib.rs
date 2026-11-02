@@ -762,7 +762,7 @@ impl KismetPropertyPointer {
             >= KismetPropertyPointer::XFER_PROP_POINTER_SWITCH_TO_SERIALIZING_AS_FIELD_PATH_VERSION
         {
             let num_entries = asset.read_i32::<LE>()?;
-            let mut names = Vec::with_capacity(num_entries as usize);
+            let mut names = Vec::new();
             for _i in 0..num_entries as usize {
                 names.push(asset.read_fname()?);
             }
@@ -2533,7 +2533,7 @@ impl KismetExpressionTrait for ExMapConst {
         let mut offset = size_of::<i32>();
         offset += self.key_property.write(asset)?;
         offset += self.value_property.write(asset)?;
-        asset.write_i32::<LE>(self.elements.len() as i32)?;
+        asset.write_i32::<LE>((self.elements.len() / 2) as i32)?;
         for element in &self.elements {
             offset += KismetExpression::write(element, asset)?;
         }
@@ -2952,7 +2952,7 @@ impl KismetExpressionTrait for ExSetMap {
     ) -> Result<usize, Error> {
         let mut offset = size_of::<i32>();
         offset += KismetExpression::write(self.map_property.as_ref(), asset)?;
-        asset.write_i32::<LE>(self.elements.len() as i32)?;
+        asset.write_i32::<LE>((self.elements.len() / 2) as i32)?;
         for element in &self.elements {
             offset += KismetExpression::write(element, asset)?;
         }
@@ -3117,7 +3117,7 @@ impl ExSwitchValue {
         let end_goto_offset = asset.read_u32::<LE>()?;
         let index_term = Box::new(KismetExpression::new(asset)?);
 
-        let mut cases = Vec::with_capacity(num_cases as usize);
+        let mut cases = Vec::new();
         for _i in 0..num_cases as usize {
             let term_a = KismetExpression::new(asset)?;
             let term_b = asset.read_u32::<LE>()?;

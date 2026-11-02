@@ -63,7 +63,7 @@ impl PerPlatformBoolProperty {
         let property_guid = optional_guid!(asset, include_header);
 
         let num_entries = asset.read_i32::<LE>()?;
-        let mut value = Vec::with_capacity(num_entries as usize);
+        let mut value = Vec::new();
 
         for _i in 0..num_entries as usize {
             value.push(asset.read_bool()?);
@@ -107,7 +107,7 @@ impl PerPlatformIntProperty {
         let property_guid = optional_guid!(asset, include_header);
 
         let num_entries = asset.read_i32::<LE>()?;
-        let mut value = Vec::with_capacity(num_entries as usize);
+        let mut value = Vec::new();
 
         for _i in 0..num_entries as usize {
             value.push(asset.read_i32::<LE>()?);
@@ -151,7 +151,7 @@ impl PerPlatformFloatProperty {
         let property_guid = optional_guid!(asset, include_header);
 
         let num_entries = asset.read_i32::<LE>()?;
-        let mut value = Vec::with_capacity(num_entries as usize);
+        let mut value = Vec::new();
 
         for _i in 0..num_entries as usize {
             value.push(OrderedFloat(asset.read_f32::<LE>()?));

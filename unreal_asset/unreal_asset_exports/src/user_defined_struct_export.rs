@@ -33,6 +33,16 @@ impl<Index: PackageIndexTrait> UserDefinedStructExport<Index> {
         asset: &mut Reader,
     ) -> Result<Self, Error> {
         let struct_export = StructExport::from_base(base, asset)?;
+        // the defaults of an unversioned struct use its own schema which can't be in the mappings
+        // yet as it's being read right now, so they're kept with the rest of the export's extras
+        if asset.has_unversioned_properties() {
+            return Ok(Self {
+                struct_export,
+                flags: EStructFlags::empty(),
+                default_struct_instance: Vec::new(),
+            });
+        }
+
         let flags = EStructFlags::from_bits(asset.read_u32::<LE>()?)
             .ok_or_else(|| Error::invalid_file("Invalid struct flags".to_string()))?;
         let mut default_struct_instance = Vec::new();
@@ -75,6 +85,10 @@ impl<Index: PackageIndexTrait> ExportBaseTrait<Index> for UserDefinedStructExpor
 impl<Index: PackageIndexTrait> ExportTrait<Index> for UserDefinedStructExport<Index> {
     fn write<Writer: ArchiveWriter<Index>>(&self, asset: &mut Writer) -> Result<(), Error> {
         self.struct_export.write(asset)?;
+        if asset.has_unversioned_properties() {
+            return Ok(());
+        }
+
         asset.write_u32::<LE>(self.flags.bits())?;
         for entry in &self.default_struct_instance {
             Property::write(entry, asset, true)?;

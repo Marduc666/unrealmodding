@@ -186,7 +186,7 @@ impl FWorldTileInfo {
         let mut lod_list = None;
         if object_version >= ObjectVersion::VER_UE4_WORLD_LEVEL_INFO_LOD_LIST {
             let num_entries = asset.read_i32::<LE>()? as usize;
-            let mut list = Vec::with_capacity(num_entries);
+            let mut list = Vec::new();
             for _i in 0..num_entries {
                 list.push(FWorldTileLODInfo::new(asset)?);
             }

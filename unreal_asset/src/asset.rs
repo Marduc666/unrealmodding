@@ -108,8 +108,7 @@ impl UAssetExportMapEntry {
 
         entry.outer_index = PackageIndex::new(archive.read_i32::<LE>()?);
         entry.object_name = archive.read_fname()?;
-        entry.object_flags = EObjectFlags::from_bits(archive.read_u32::<LE>()?)
-            .ok_or_else(|| Error::invalid_file("Invalid property flags".to_string()))?;
+        entry.object_flags = EObjectFlags::from_bits_retain(archive.read_u32::<LE>()?);
 
         if archive.get_object_version() < ObjectVersion::VER_UE4_64BIT_EXPORTMAP_SERIALSIZES {
             entry.serial_size = archive.read_i32::<LE>()? as i64;
@@ -316,16 +315,43 @@ impl UAssetExportMapEntry {
     }
 }
 
+/// Location of a piece of bulk data
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DataResource {
+    /// Resource flags
+    pub flags: u32,
+    /// Offset into the file holding the data
+    pub serial_offset: i64,
+    /// Size in the file holding the data
+    pub serial_size: i64,
+    /// Size after decompression
+    pub raw_size: i64,
+    /// `EBulkDataFlags` of the data
+    pub legacy_bulk_data_flags: u32,
+}
+
 /// Asset header
 struct AssetHeader {
+    /// Name count
+    name_count: i32,
     /// Name map offset
     name_offset: i32,
+    /// Soft object paths offset
+    soft_object_paths_offset: i32,
+    /// Gatherable text data offset
+    gatherable_text_data_offset: i32,
     /// Imports offset
     import_offset: i32,
     /// Exports offset
     export_offset: i32,
+    /// Cell exports offset
+    cell_export_offset: i32,
+    /// Cell imports offset
+    cell_import_offset: i32,
     /// Dependencies offset
     depends_offset: i32,
+    /// Data resource offset
+    data_resource_offset: i32,
     /// Soft package references offset
     soft_package_reference_offset: i32,
     /// Asset registry data offset
@@ -431,6 +457,40 @@ pub struct Asset<C: Read + Seek> {
     payload_toc_offset: i64,
     /// Data resource offset
     data_resource_offset: i32,
+    /// Hash of the saved package, replaces the package guid since `PACKAGE_SAVED_HASH`
+    #[container_ignore]
+    saved_hash: [u8; 20],
+    /// Cell export count
+    cell_export_count: i32,
+    /// Cell export offset
+    cell_export_offset: i32,
+    /// Cell import count
+    cell_import_count: i32,
+    /// Cell import offset
+    cell_import_offset: i32,
+    /// Metadata offset
+    metadata_offset: i32,
+    /// Import type hierarchy count
+    import_type_hierarchies_count: i32,
+    /// Import type hierarchy offset
+    import_type_hierarchies_offset: i32,
+    /// Does the import table of this cooked asset carry package names
+    has_import_package_names: bool,
+    /// End of the name map when this asset was read
+    names_end: i32,
+    /// Tables between the name map and the import map, kept as raw bytes
+    #[container_ignore]
+    pre_import_data: Vec<u8>,
+    /// Last bytes of the package, usually the package magic but some cookers don't write that
+    #[container_ignore]
+    package_tail: [u8; 4],
+    /// How far past the end of the exports the bulk data starts
+    bulk_data_start_adjustment: i64,
+    /// End of the preload dependencies when this asset was read
+    preload_end: i32,
+    /// Everything after the preload dependencies such as data resources, kept as raw bytes
+    #[container_ignore]
+    post_preload_data: Vec<u8>,
 
     /// Overriden name map hashes
     #[container_ignore]
@@ -509,6 +569,21 @@ impl<'a, C: Read + Seek> Asset<C> {
             names_referenced_from_export_data_count: 0,
             payload_toc_offset: 0,
             data_resource_offset: 0,
+            saved_hash: [0; 20],
+            cell_export_count: 0,
+            cell_export_offset: 0,
+            cell_import_count: 0,
+            cell_import_offset: 0,
+            metadata_offset: 0,
+            import_type_hierarchies_count: 0,
+            import_type_hierarchies_offset: 0,
+            has_import_package_names: false,
+            names_end: 0,
+            pre_import_data: Vec::new(),
+            package_tail: UE4_ASSET_MAGIC.to_be_bytes(),
+            bulk_data_start_adjustment: 0,
+            preload_end: 0,
+            post_preload_data: Vec::new(),
 
             override_name_map_hashes: IndexedMap::new(),
             name_map,
@@ -584,6 +659,14 @@ impl<'a, C: Read + Seek> Asset<C> {
         // read file license version
         self.asset_data.summary.file_licensee_version = self.read_i32::<LE>()?;
 
+        let has_saved_hash = self.get_object_version_ue5() >= ObjectVersionUE5::PACKAGE_SAVED_HASH;
+        if has_saved_hash {
+            let mut saved_hash = [0; 20];
+            self.read_exact(&mut saved_hash)?;
+            self.saved_hash = saved_hash;
+            self.header_offset = self.read_i32::<LE>()?;
+        }
+
         // read custom versions container
         if self.legacy_file_version <= -2 {
             // TODO: support for enum-based custom versions
@@ -595,7 +678,9 @@ impl<'a, C: Read + Seek> Asset<C> {
         }
 
         // read header offset
-        self.header_offset = self.read_i32::<LE>()?;
+        if !has_saved_hash {
+            self.header_offset = self.read_i32::<LE>()?;
+        }
 
         // read folder name
         self.folder_name = self
@@ -603,8 +688,7 @@ impl<'a, C: Read + Seek> Asset<C> {
             .ok_or_else(|| Error::no_data("folder_name is None".to_string()))?;
 
         // read package flags
-        self.asset_data.summary.package_flags = EPackageFlags::from_bits(self.read_u32::<LE>()?)
-            .ok_or_else(|| Error::invalid_file("Invalid package flags".to_string()))?;
+        self.asset_data.summary.package_flags = EPackageFlags::from_bits_retain(self.read_u32::<LE>()?);
 
         // read name count and offset
         self.name_count = self.read_i32::<LE>()?;
@@ -626,6 +710,20 @@ impl<'a, C: Read + Seek> Asset<C> {
         self.export_offset = self.read_i32::<LE>()?;
         self.asset_data.summary.import_count = self.read_i32::<LE>()?;
         self.import_offset = self.read_i32::<LE>()?;
+        if self.get_object_version_ue5() >= ObjectVersionUE5::VERSE_CELLS {
+            self.cell_export_count = self.read_i32::<LE>()?;
+            self.cell_export_offset = self.read_i32::<LE>()?;
+            self.cell_import_count = self.read_i32::<LE>()?;
+            self.cell_import_offset = self.read_i32::<LE>()?;
+            if self.cell_export_count > 0 || self.cell_import_count > 0 {
+                return Err(Error::invalid_file(
+                    "Packages containing verse cells are not supported".to_string(),
+                ));
+            }
+        }
+        if self.get_object_version_ue5() >= ObjectVersionUE5::METADATA_SERIALIZATION_OFFSET {
+            self.metadata_offset = self.read_i32::<LE>()?;
+        }
         self.depends_offset = self.read_i32::<LE>()?;
         if self.asset_data.object_version >= ObjectVersion::VER_UE4_ADD_STRING_ASSET_REFERENCES_MAP
         {
@@ -637,8 +735,15 @@ impl<'a, C: Read + Seek> Asset<C> {
         }
         self.thumbnail_table_offset = self.read_i32::<LE>()?;
 
+        if self.get_object_version_ue5() >= ObjectVersionUE5::IMPORT_TYPE_HIERARCHIES {
+            self.import_type_hierarchies_count = self.read_i32::<LE>()?;
+            self.import_type_hierarchies_offset = self.read_i32::<LE>()?;
+        }
+
         // read guid
-        self.package_guid = self.raw_reader.read_guid()?;
+        if !has_saved_hash {
+            self.package_guid = self.raw_reader.read_guid()?;
+        }
 
         // raed generations
         let generations_count = self.read_i32::<LE>()?;
@@ -826,8 +931,8 @@ impl<'a, C: Read + Seek> Asset<C> {
             return None;
         }
 
-        let index = -index.index - 1;
-        if index < 0 || index > self.imports.len() as i32 {
+        let index = index.index.checked_neg().map(|v| v - 1)?;
+        if index < 0 || index >= self.imports.len() as i32 {
             return None;
         }
 
@@ -874,25 +979,39 @@ impl<'a, C: Read + Seek> Asset<C> {
         }
 
         if self.import_offset > 0 {
+            let names_end = self.position();
+            if self.import_offset as u64 > names_end {
+                let mut data = vec![0; self.import_offset as usize - names_end as usize];
+                self.read_exact(&mut data)?;
+                self.pre_import_data = data;
+            }
+            self.names_end = names_end as i32;
+
+            self.has_import_package_names = self.detect_import_package_names();
             self.seek(SeekFrom::Start(self.import_offset as u64))?;
             for _i in 0..self.asset_data.summary.import_count {
                 let class_package = self.read_fname()?;
                 let class_name = self.read_fname()?;
                 let outer_index = PackageIndex::new(self.read_i32::<LE>()?);
                 let object_name = self.read_fname()?;
+                let package_name = match self.has_import_package_names {
+                    true => Some(self.read_fname()?),
+                    false => None,
+                };
                 let optional =
                     match self.get_object_version_ue5() >= ObjectVersionUE5::OPTIONAL_RESOURCES {
                         true => self.read_i32::<LE>()? == 1,
                         false => false,
                     };
 
-                let import = Import::new(
+                let mut import = Import::new(
                     class_package,
                     class_name,
                     outer_index,
                     object_name,
                     optional,
                 );
+                import.package_name = package_name;
                 self.imports.push(import);
             }
         }
@@ -972,6 +1091,25 @@ impl<'a, C: Read + Seek> Asset<C> {
             self.seek(SeekFrom::Start(self.preload_dependency_offset as u64))?;
         }
 
+        // anything left between the preload dependencies and the exports is kept as is
+        self.preload_end = self.preload_dependency_offset + self.preload_dependency_count.max(0) * 4;
+        if self.preload_dependency_offset > 0 && self.header_offset > self.preload_end {
+            self.seek(SeekFrom::Start(self.preload_end as u64))?;
+            let mut data = vec![0; (self.header_offset - self.preload_end) as usize];
+            self.read_exact(&mut data)?;
+            self.post_preload_data = data;
+        }
+
+        let data_length = self.data_length()?;
+        if data_length >= 4 {
+            self.seek(SeekFrom::Start(data_length - 4))?;
+            let mut package_tail = [0; 4];
+            self.read_exact(&mut package_tail)?;
+            self.package_tail = package_tail;
+            self.bulk_data_start_adjustment =
+                self.bulk_data_start_offset - (data_length as i64 - 4);
+        }
+
         if self.header_offset > 0 && !export_map.is_empty() {
             let map_len = export_map.len();
             self.asset_data.exports.reserve(map_len);
@@ -989,12 +1127,101 @@ impl<'a, C: Read + Seek> Asset<C> {
                     false => self.data_length()? - 4,
                 };
 
-                let export = self.read_export(base_export, next_starting)?;
+                let serial_offset = base_export.serial_offset as u64;
+                let mut export = self.read_export(base_export, next_starting)?;
+                // the last export's size can include the end of the package
+                if let Export::RawExport(raw) = &mut export {
+                    raw.data
+                        .truncate(next_starting.saturating_sub(serial_offset) as usize);
+                }
                 self.asset_data.exports.push(export);
             }
         }
 
         Ok(())
+    }
+
+    /// Where the bulk data of this asset is stored, bulk data refers to these by index
+    pub fn data_resources(&self) -> Vec<DataResource> {
+        let table = (self.data_resource_offset - self.preload_end) as usize;
+        let Some(mut data) = self.post_preload_data.get(table..) else {
+            return Vec::new();
+        };
+        if self.data_resource_offset <= 0 {
+            return Vec::new();
+        }
+        let read = |data: &mut &[u8]| -> Option<(u32, i32)> {
+            Some((data.read_u32::<LE>().ok()?, data.read_i32::<LE>().ok()?))
+        };
+        let Some((version, count)) = read(&mut data) else {
+            return Vec::new();
+        };
+        let mut resources = Vec::new();
+        for _ in 0..count {
+            let mut resource = || -> Option<DataResource> {
+                let flags = data.read_u32::<LE>().ok()?;
+                // the cooked index was added in the second version
+                if version >= 2 {
+                    data.read_u8().ok()?;
+                }
+                let serial_offset = data.read_i64::<LE>().ok()?;
+                data.read_i64::<LE>().ok()?;
+                let serial_size = data.read_i64::<LE>().ok()?;
+                let raw_size = data.read_i64::<LE>().ok()?;
+                data.read_i32::<LE>().ok()?;
+                let legacy_bulk_data_flags = data.read_u32::<LE>().ok()?;
+                Some(DataResource {
+                    flags,
+                    serial_offset,
+                    serial_size,
+                    raw_size,
+                    legacy_bulk_data_flags,
+                })
+            };
+            match resource() {
+                Some(resource) => resources.push(resource),
+                None => break,
+            }
+        }
+        resources
+    }
+
+    /// Cooked import tables come in a short layout and an expanded one with a package name,
+    /// the latter is written by UE 5.8 builds such as Voyage. The size of the table tells which
+    fn detect_import_package_names(&self) -> bool {
+        let is_filtered = self
+            .asset_data
+            .summary
+            .package_flags
+            .contains(EPackageFlags::PKG_FILTER_EDITOR_ONLY);
+        let supported =
+            self.asset_data.object_version >= ObjectVersion::VER_UE4_NON_OUTER_PACKAGE_IMPORT;
+        let count = self.asset_data.summary.import_count as i64;
+        if !supported || !is_filtered || count <= 0 {
+            return supported && !is_filtered;
+        }
+
+        let table_end = [
+            self.export_offset,
+            self.cell_export_offset,
+            self.cell_import_offset,
+            self.depends_offset,
+            self.preload_dependency_offset,
+            self.data_resource_offset,
+            self.asset_registry_data_offset,
+            self.world_tile_info_offset,
+            self.header_offset,
+        ]
+        .into_iter()
+        .filter(|offset| *offset > self.import_offset)
+        .min()
+        .unwrap_or(self.header_offset);
+
+        let mut short_size = 28;
+        if self.get_object_version_ue5() >= ObjectVersionUE5::OPTIONAL_RESOURCES {
+            short_size += 4;
+        }
+        (table_end - self.import_offset) as i64 == count * (short_size + 8)
     }
 
     /// Write asset header
@@ -1026,6 +1253,13 @@ impl<'a, C: Read + Seek> Asset<C> {
         }
 
         cursor.write_i32::<LE>(self.asset_data.summary.file_licensee_version)?;
+
+        let has_saved_hash = self.get_object_version_ue5() >= ObjectVersionUE5::PACKAGE_SAVED_HASH;
+        if has_saved_hash {
+            cursor.write_all(&self.saved_hash)?;
+            cursor.write_i32::<LE>(asset_header.header_offset)?;
+        }
+
         if self.legacy_file_version <= -2 {
             match self.asset_data.summary.unversioned {
                 true => cursor.write_i32::<LE>(0)?,
@@ -1039,26 +1273,37 @@ impl<'a, C: Read + Seek> Asset<C> {
             };
         }
 
-        cursor.write_i32::<LE>(asset_header.header_offset)?;
+        if !has_saved_hash {
+            cursor.write_i32::<LE>(asset_header.header_offset)?;
+        }
         cursor.write_fstring(Some(&self.folder_name))?;
         cursor.write_u32::<LE>(self.asset_data.summary.package_flags.bits())?;
-        cursor.write_i32::<LE>(self.name_map.get_ref().get_name_map_index_list().len() as i32)?;
+        cursor.write_i32::<LE>(asset_header.name_count)?;
         cursor.write_i32::<LE>(asset_header.name_offset)?;
 
         if self.get_object_version_ue5() >= ObjectVersionUE5::ADD_SOFTOBJECTPATH_LIST {
             cursor.write_i32::<LE>(self.soft_object_paths_count)?;
-            cursor.write_i32::<LE>(self.soft_object_paths_offset)?;
+            cursor.write_i32::<LE>(asset_header.soft_object_paths_offset)?;
         }
 
         if self.asset_data.object_version >= ObjectVersion::VER_UE4_SERIALIZE_TEXT_IN_PACKAGES {
             cursor.write_i32::<LE>(self.gatherable_text_data_count)?;
-            cursor.write_i32::<LE>(self.gatherable_text_data_offset)?;
+            cursor.write_i32::<LE>(asset_header.gatherable_text_data_offset)?;
         }
 
         cursor.write_i32::<LE>(self.asset_data.exports.len() as i32)?;
         cursor.write_i32::<LE>(asset_header.export_offset)?;
         cursor.write_i32::<LE>(self.imports.len() as i32)?;
         cursor.write_i32::<LE>(asset_header.import_offset)?;
+        if self.get_object_version_ue5() >= ObjectVersionUE5::VERSE_CELLS {
+            cursor.write_i32::<LE>(self.cell_export_count)?;
+            cursor.write_i32::<LE>(asset_header.cell_export_offset)?;
+            cursor.write_i32::<LE>(self.cell_import_count)?;
+            cursor.write_i32::<LE>(asset_header.cell_import_offset)?;
+        }
+        if self.get_object_version_ue5() >= ObjectVersionUE5::METADATA_SERIALIZATION_OFFSET {
+            cursor.write_i32::<LE>(self.metadata_offset)?;
+        }
         cursor.write_i32::<LE>(asset_header.depends_offset)?;
 
         if self.asset_data.object_version >= ObjectVersion::VER_UE4_ADD_STRING_ASSET_REFERENCES_MAP
@@ -1072,13 +1317,18 @@ impl<'a, C: Read + Seek> Asset<C> {
         }
 
         cursor.write_i32::<LE>(self.thumbnail_table_offset)?;
-        cursor.write_guid(&self.package_guid)?;
+        if self.get_object_version_ue5() >= ObjectVersionUE5::IMPORT_TYPE_HIERARCHIES {
+            cursor.write_i32::<LE>(self.import_type_hierarchies_count)?;
+            cursor.write_i32::<LE>(self.import_type_hierarchies_offset)?;
+        }
+        if !has_saved_hash {
+            cursor.write_guid(&self.package_guid)?;
+        }
         cursor.write_i32::<LE>(self.generations.len() as i32)?;
 
         for _ in 0..self.generations.len() {
             cursor.write_i32::<LE>(self.asset_data.exports.len() as i32)?;
-            cursor
-                .write_i32::<LE>(self.name_map.get_ref().get_name_map_index_list().len() as i32)?;
+            cursor.write_i32::<LE>(asset_header.name_count)?;
         }
 
         if self.asset_data.object_version >= ObjectVersion::VER_UE4_ENGINE_VERSION_OBJECT {
@@ -1138,7 +1388,7 @@ impl<'a, C: Read + Seek> Asset<C> {
         }
 
         if self.get_object_version_ue5() >= ObjectVersionUE5::DATA_RESOURCES {
-            cursor.write_i32::<LE>(self.data_resource_offset)?;
+            cursor.write_i32::<LE>(asset_header.data_resource_offset)?;
         }
 
         Ok(())
@@ -1187,11 +1437,21 @@ impl<'a, C: Read + Seek> Asset<C> {
             )));
         }
 
+        // properties can add names while being written, but those come after the name map and
+        // unversioned packages don't reference them, so count what was actually serialized
+        let name_count = self.name_map.get_ref().get_name_map_index_list().len() as i32;
+
         let header = AssetHeader {
+            name_count,
             name_offset: self.name_offset,
+            soft_object_paths_offset: self.soft_object_paths_offset,
+            gatherable_text_data_offset: self.gatherable_text_data_offset,
             import_offset: self.import_offset,
             export_offset: self.export_offset,
+            cell_export_offset: self.cell_export_offset,
+            cell_import_offset: self.cell_import_offset,
             depends_offset: self.depends_offset,
+            data_resource_offset: self.data_resource_offset,
             soft_package_reference_offset: self.soft_package_reference_offset,
             asset_registry_data_offset: self.asset_registry_data_offset,
             world_tile_info_offset: self.world_tile_info_offset,
@@ -1234,6 +1494,15 @@ impl<'a, C: Read + Seek> Asset<C> {
             }
         }
 
+        let names_end = serializer.position() as i32;
+        let moved = |offset: i32| match offset > 0 {
+            true => offset - self.names_end + names_end,
+            false => 0,
+        };
+        let soft_object_paths_offset = moved(self.soft_object_paths_offset);
+        let gatherable_text_data_offset = moved(self.gatherable_text_data_offset);
+        serializer.write_all(&self.pre_import_data)?;
+
         let import_offset = match !self.imports.is_empty() {
             true => serializer.position() as i32,
             false => 0,
@@ -1244,6 +1513,9 @@ impl<'a, C: Read + Seek> Asset<C> {
             serializer.write_fname(&import.class_name)?;
             serializer.write_i32::<LE>(import.outer_index.index)?;
             serializer.write_fname(&import.object_name)?;
+            if self.has_import_package_names {
+                serializer.write_fname(import.package_name.as_ref().unwrap_or(&import.object_name))?;
+            }
             if serializer.get_object_version_ue5() >= ObjectVersionUE5::OPTIONAL_RESOURCES {
                 serializer.write_i32::<LE>(match import.optional {
                     true => 1,
@@ -1266,6 +1538,15 @@ impl<'a, C: Read + Seek> Asset<C> {
                 unk.first_export_dependency_offset,
             )?;
         }
+
+        let cell_export_offset = match self.cell_export_offset > 0 {
+            true => serializer.position() as i32,
+            false => 0,
+        };
+        let cell_import_offset = match self.cell_import_offset > 0 {
+            true => serializer.position() as i32,
+            false => 0,
+        };
 
         let depends_offset = match self.depends_map {
             Some(_) => serializer.position() as i32,
@@ -1350,6 +1631,12 @@ impl<'a, C: Read + Seek> Asset<C> {
             preload_dependency_count = -1;
         }
 
+        let data_resource_offset = match self.data_resource_offset > 0 {
+            true => self.data_resource_offset - self.preload_end + serializer.position() as i32,
+            false => self.data_resource_offset,
+        };
+        serializer.write_all(&self.post_preload_data)?;
+
         let header_offset = match !self.asset_data.exports.is_empty() {
             true => serializer.position() as i32,
             false => 0,
@@ -1397,12 +1684,13 @@ impl<'a, C: Read + Seek> Asset<C> {
                 bulk_serializer.write_all(&normal_export.extras)?;
             }
         }
-        bulk_serializer.write_all(&[0xc1, 0x83, 0x2a, 0x9e])?;
+        bulk_serializer.write_all(&self.package_tail)?;
 
         let bulk_data_start_offset = match self.asset_data.use_event_driven_loader {
             true => final_cursor_pos as i64 + bulk_serializer.position() as i64,
             false => bulk_serializer.position() as i64,
-        } - 4;
+        } - 4
+            + self.bulk_data_start_adjustment;
 
         bulk_serializer.rewind()?;
 
@@ -1437,10 +1725,16 @@ impl<'a, C: Read + Seek> Asset<C> {
         serializer.rewind()?;
 
         let header = AssetHeader {
+            name_count,
             name_offset,
+            soft_object_paths_offset,
+            gatherable_text_data_offset,
             import_offset,
             export_offset,
+            cell_export_offset,
+            cell_import_offset,
             depends_offset,
+            data_resource_offset,
             soft_package_reference_offset,
             asset_registry_data_offset,
             world_tile_info_offset,

@@ -136,14 +136,14 @@ where
         item_reader: fn(&mut Reader) -> Result<T, Error>,
     ) -> Result<Self, Error> {
         let entries_amount = asset.read_i32::<LE>()?;
-        let mut entries = Vec::with_capacity(entries_amount as usize);
+        let mut entries = Vec::new();
 
         for _ in 0..entries_amount {
             entries.push(FEntry::new(asset)?);
         }
 
         let items_amount = asset.read_i32::<LE>()?;
-        let mut items = Vec::with_capacity(items_amount as usize);
+        let mut items = Vec::new();
 
         for _ in 0..entries_amount {
             items.push(item_reader(asset)?);

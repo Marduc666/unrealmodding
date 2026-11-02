@@ -11,6 +11,8 @@ pub struct EmptyProperty {
     pub name: FName,
     /// Property ancestry
     pub ancestry: Ancestry,
+    /// Property duplication index
+    pub duplication_index: i32,
 }
 
 impl EmptyProperty {
@@ -20,6 +22,7 @@ impl EmptyProperty {
             type_name,
             name,
             ancestry,
+            duplication_index: 0,
         }
     }
 }
@@ -34,7 +37,7 @@ impl PropertyDataTrait for EmptyProperty {
     }
 
     fn get_duplication_index(&self) -> i32 {
-        0
+        self.duplication_index
     }
 
     fn get_property_guid(&self) -> Option<Guid> {

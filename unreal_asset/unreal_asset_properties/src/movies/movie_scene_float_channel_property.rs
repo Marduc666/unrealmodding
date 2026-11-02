@@ -46,7 +46,7 @@ impl MovieSceneFloatChannel {
         let times_struct_length = asset.read_i32::<LE>()?;
         let times_length = asset.read_i32::<LE>()?;
 
-        let mut times = Vec::with_capacity(times_length as usize);
+        let mut times = Vec::new();
         for _ in 0..times_length {
             times.push(FrameNumber::new(asset.read_i32::<LE>()?));
         }
@@ -54,7 +54,7 @@ impl MovieSceneFloatChannel {
         let values_struct_length = asset.read_i32::<LE>()?;
         let values_length = asset.read_i32::<LE>()?;
 
-        let mut values = Vec::with_capacity(values_length as usize);
+        let mut values = Vec::new();
         for _ in 0..values_length {
             //todo: clangwin64 is always false?
             values.push(MovieSceneFloatValue::new(asset, false)?);

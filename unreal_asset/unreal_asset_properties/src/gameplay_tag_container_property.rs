@@ -31,7 +31,7 @@ impl GameplayTagContainerProperty {
         let property_guid = optional_guid!(asset, include_header);
 
         let length = asset.read_i32::<LE>()?;
-        let mut value = Vec::with_capacity(length as usize);
+        let mut value = Vec::new();
         for _i in 0..length as usize {
             value.push(asset.read_fname()?);
         }

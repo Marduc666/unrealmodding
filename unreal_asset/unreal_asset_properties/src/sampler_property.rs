@@ -71,13 +71,13 @@ impl WeightedRandomSamplerProperty {
         let property_guid = optional_guid!(asset, include_header);
 
         let size = asset.read_i32::<LE>()?;
-        let mut prob = Vec::with_capacity(size as usize);
+        let mut prob = Vec::new();
         for _i in 0..size as usize {
             prob.push(OrderedFloat(asset.read_f32::<LE>()?));
         }
 
         let size = asset.read_i32::<LE>()?;
-        let mut alias = Vec::with_capacity(size as usize);
+        let mut alias = Vec::new();
         for _i in 0..size as usize {
             alias.push(asset.read_i32::<LE>()?);
         }
@@ -135,13 +135,13 @@ impl SkeletalMeshAreaWeightedTriangleSampler {
         let property_guid = optional_guid!(asset, include_header);
 
         let size = asset.read_i32::<LE>()?;
-        let mut prob = Vec::with_capacity(size as usize);
+        let mut prob = Vec::new();
         for _i in 0..size as usize {
             prob.push(OrderedFloat(asset.read_f32::<LE>()?));
         }
 
         let size = asset.read_i32::<LE>()?;
-        let mut alias = Vec::with_capacity(size as usize);
+        let mut alias = Vec::new();
         for _i in 0..size as usize {
             alias.push(asset.read_i32::<LE>()?);
         }

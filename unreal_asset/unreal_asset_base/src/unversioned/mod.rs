@@ -33,16 +33,23 @@ use self::usmap_reader::UsmapReader;
 )]
 #[repr(u8)]
 pub enum EUsmapVersion {
-    /// Initial
-    Initial,
+    /// Initial format
+    Initial = 0,
 
-    /// Adds package versioning to aid with compatibililty
-    PackageVersioning,
+    /// Adds package versioning to aid with compatibility
+    PackageVersioning = 1,
 
-    /// Latest
-    Latest,
+    /// Adds support for 16-bit wide name-lengths (ushort/uint16)
+    LongFName = 2,
+
+    /// Adds support for enums with more than 255 values
+    LargeEnums = 3,
+
+    /// Adds support for explicit enum values
+    ExplicitEnumValues = 4,
+
     /// Latest plus one
-    LatestPlusOne,
+    LatestPlusOne = 5,
 }
 
 bitflags! {
@@ -112,7 +119,7 @@ impl UsmapSchema {
                 property.schema_index += j as u16;
 
                 properties.insert(
-                    (property.name.clone(), property.schema_index as u32),
+                    (property.name.clone(), property.array_index as u32),
                     property,
                 );
             }
@@ -144,6 +151,8 @@ pub struct Usmap {
     pub name_map: Vec<String>,
     /// Enum map
     pub enum_map: IndexedMap<String, Vec<String>>,
+    /// Numeric value of every name in the enum map
+    pub enum_values: IndexedMap<String, Vec<i64>>,
     /// Schemas
     pub schemas: IndexedMap<String, UsmapSchema>,
     /// Extension version
@@ -161,7 +170,7 @@ pub struct Usmap {
 }
 
 impl Usmap {
-    const ASSET_MAGIC: u16 = u16::from_be_bytes([0xc4, 0x30]);
+    const ASSET_MAGIC: u16 = 0x30C4;
 
     /// Gets usmap property for a given property name + ancestry
     pub fn get_property(
@@ -186,6 +195,29 @@ impl Usmap {
         }
 
         properties
+    }
+
+    /// Gets the "global" index of every property with this name in a schema and its supers,
+    /// a class can shadow a property of its parent so there can be several
+    pub fn get_global_indices(
+        &self,
+        property_name: &FName,
+        schema_name: &str,
+        duplication_index: u32,
+    ) -> Vec<u32> {
+        let mut indices = Vec::new();
+        let mut global_index = 0;
+        let mut schema_name = schema_name;
+        while let Some(schema) = self.schemas.get_by_key(schema_name) {
+            if let Some(property) =
+                property_name.get_content(|name| schema.get_property(name, duplication_index))
+            {
+                indices.push(global_index + property.schema_index as u32);
+            }
+            global_index += schema.prop_count as u32;
+            schema_name = schema.super_type.as_str();
+        }
+        indices
     }
 
     /// Gets usmap property and it's "global" index for a given proeprty name + ancestry with a duplication index
@@ -252,7 +284,7 @@ impl Usmap {
 
         let mut has_versioning = usmap_version >= EUsmapVersion::PackageVersioning;
         if has_versioning {
-            has_versioning = reader.read_bool()?;
+            has_versioning = reader.read_i32::<LE>()? != 0;
         }
 
         if has_versioning {
@@ -304,10 +336,8 @@ impl Usmap {
 
                 #[cfg(feature = "oodle")]
                 {
-                    let compressed = vec![0u8; compressed_size as usize];
-
                     let decompressed = oodle::decompress(
-                        &compressed,
+                        &compressed_data,
                         compressed_size as u64,
                         decompressed_size as u64,
                     )
@@ -332,27 +362,52 @@ impl Usmap {
         );
 
         self.name_map = reader.read_array(|reader| {
-            let name_length = reader.read_u8()?;
-            let mut buf = vec![0u8; name_length as usize - 1];
+            let name_length = if usmap_version >= EUsmapVersion::LongFName {
+                reader.read_u16::<LE>()? as usize
+            } else {
+                reader.read_u8()? as usize
+            };
+            let mut buf = vec![0u8; name_length];
             reader.read_exact(&mut buf)?;
-            Ok(String::from_utf8(buf)?)
+            // Strip trailing null if present (CUE4Parse ReadString behavior)
+            let end = if name_length > 0 && buf[name_length - 1] == 0 {
+                name_length - 1
+            } else {
+                name_length
+            };
+            Ok(String::from_utf8(buf[..end].to_vec())?)
         })?;
 
         let enum_len = reader.read_u32::<LE>()?;
         self.enum_map = IndexedMap::with_capacity(enum_len as usize);
+        self.enum_values = IndexedMap::with_capacity(enum_len as usize);
 
         let mut reader = UsmapReader::new(&mut reader, &self.name_map, &self.custom_versions);
 
         for _ in 0..enum_len {
             let enum_name = reader.read_name()?;
 
-            let enum_names_len = reader.read_u8()?;
-            let mut enum_names = Vec::with_capacity(enum_names_len as usize);
+            let enum_names_len = if usmap_version >= EUsmapVersion::LargeEnums {
+                reader.read_u16::<LE>()? as usize
+            } else {
+                reader.read_u8()? as usize
+            };
+            let mut enum_names = Vec::with_capacity(enum_names_len);
+            let mut enum_values = Vec::with_capacity(enum_names_len);
 
-            for _ in 0..enum_names_len {
-                enum_names.push(reader.read_name()?);
+            if usmap_version >= EUsmapVersion::ExplicitEnumValues {
+                for _ in 0..enum_names_len {
+                    enum_values.push(reader.read_u64::<LE>()? as i64);
+                    enum_names.push(reader.read_name()?);
+                }
+            } else {
+                for value in 0..enum_names_len {
+                    enum_values.push(value as i64);
+                    enum_names.push(reader.read_name()?);
+                }
             }
 
+            self.enum_values.insert(enum_name.clone(), enum_values);
             self.enum_map.insert(enum_name, enum_names);
         }
 
@@ -364,28 +419,30 @@ impl Usmap {
             self.schemas.insert(schema.name.clone(), schema);
         }
 
-        // read extensions
-
+        // read extensions (best-effort, don't fail the whole parse)
         if reader.data_length()? > reader.position() {
-            self.extension_version = UsmapExtensionVersion::from_bits(reader.read_u32::<LE>()?)
-                .ok_or_else(|| Error::invalid_file("Invalid extension version".to_string()))?;
+            if let Ok(ext_version) = reader.read_u32::<LE>() {
+                if let Some(ext) = UsmapExtensionVersion::from_bits(ext_version) {
+                    self.extension_version = ext;
 
-            if self
-                .extension_version
-                .contains(UsmapExtensionVersion::PATHS)
-            {
-                let num_module_paths = reader.read_u16::<LE>()?;
-                let module_paths = reader
-                    .read_array_with_length(num_module_paths as i32, |reader| {
-                        Ok(reader.read_fstring()?.unwrap_or_default())
-                    })?;
+                    if self
+                        .extension_version
+                        .contains(UsmapExtensionVersion::PATHS)
+                    {
+                        let num_module_paths = reader.read_u16::<LE>()?;
+                        let module_paths = reader
+                            .read_array_with_length(num_module_paths as i32, |reader| {
+                                Ok(reader.read_fstring()?.unwrap_or_default())
+                            })?;
 
-                for (_, _, schema) in self.schemas.iter_mut() {
-                    let index = match num_module_paths > u8::MAX as u16 {
-                        true => reader.read_u16::<LE>()?,
-                        false => reader.read_u8()? as u16,
-                    };
-                    schema.module_path = Some(module_paths[index as usize].clone());
+                        for (_, _, schema) in self.schemas.iter_mut() {
+                            let index = match num_module_paths > u8::MAX as u16 {
+                                true => reader.read_u16::<LE>()?,
+                                false => reader.read_u8()? as u16,
+                            };
+                            schema.module_path = Some(module_paths[index as usize].clone());
+                        }
+                    }
                 }
             }
         }
@@ -399,6 +456,7 @@ impl Usmap {
             version: EUsmapVersion::Initial,
             name_map: Vec::new(),
             enum_map: IndexedMap::new(),
+            enum_values: IndexedMap::new(),
             schemas: IndexedMap::new(),
             extension_version: UsmapExtensionVersion::NONE,
             object_version: ObjectVersion::UNKNOWN,

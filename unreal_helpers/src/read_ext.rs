@@ -43,8 +43,8 @@ impl<R: Read + Seek> UnrealReadExt for R {
         &mut self,
         mut f: impl FnMut(&mut Self) -> io::Result<T>,
     ) -> io::Result<Vec<T>> {
-        let mut buf = Vec::with_capacity(self.read_u32::<LE>()? as usize);
-        for _ in 0..buf.capacity() {
+        let mut buf = Vec::new();
+        for _ in 0..self.read_u32::<LE>()? {
             buf.push(f(self)?);
         }
         Ok(buf)
